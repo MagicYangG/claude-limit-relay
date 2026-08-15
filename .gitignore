@@ -1,0 +1,19 @@
+# runtime state (personal / generated, do not ship)
+preheat-log.jsonl
+relay-log.jsonl
+relay-*.log
+relay-raw-*.json
+panel-log*
+state.json
+armed/
+done/
+firepit/
+*.tmp
+*.bak*
+
+# personal schedule (copy schedule.example.json instead)
+schedule.json
+
+# local tool state - NEVER publish (contains personal identifiers)
+.claude/
+.vscode/

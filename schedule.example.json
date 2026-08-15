@@ -1,0 +1,7 @@
+{
+  "_readme": "days: Mon..Sun | reset = HH:mm target reset time (previous 5h window expiry); fire time auto = reset - 5h | edit then run: preheat apply",
+  "proxy": "",
+  "rules": [
+    { "days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "reset": "09:00" }
+  ]
+}

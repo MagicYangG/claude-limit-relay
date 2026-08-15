@@ -1,0 +1,931 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Claude-Limit-Relay</title>
+<style>
+/* ember(Gruvbox 暖琥珀)。所有色值收敛在这一处令牌表，规则里不写死颜色 */
+:root{
+  --bg:#1D2021; --panel:#282828; --panel2:#32302f; --line:#3c3836; --line2:#504945;
+  --fg:#d4be98; --fg2:#ddc7a1; --dim:#928374; --dim2:#7c6f64;
+  --acc:#d8a657; --accfg:#f0c476; --acc-b:#8a6d38; --acc-bg:#352e22; --acc-bg2:#463a2b;
+  --ok:#c3d18d; --ok2:#d3e19d; --ok-b:#5d6a44; --ok-bg:#2c3427; --ok-bg2:#343d2d;
+  --bad:#f0a898; --bad-b:#8a4a42; --bad-bg:#3b2b28;
+  --blue:#7daea3; --hov:#3a3835; --today:#2d2921; --dot:#d8a657;
+  --mono:ui-monospace,"Cascadia Mono","Consolas","JetBrains Mono","Sarasa Mono SC",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--fg); font-size:15px; line-height:1.65;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",
+    "Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;
+  -webkit-font-smoothing:antialiased; padding:0 0 60px;
+}
+.wrap{max-width:840px;margin:0 auto;padding:0 20px}
+a{color:var(--blue)}
+.mono{font-family:var(--mono)}
+
+/* ---- offline banner ---- */
+#offline{
+  display:none; background:var(--bad-bg); color:var(--bad); border-bottom:1px solid var(--bad-b);
+  padding:11px 20px; font-size:14px; position:sticky; top:0; z-index:30;
+}
+#offline.on{display:block}
+
+/* ---- header ---- */
+header{padding:30px 0 20px; display:flex; align-items:center; gap:14px}
+h1{margin:0; font-size:23px; font-weight:600; letter-spacing:.5px; color:var(--fg2); flex:1}
+h1 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--dot);
+  margin-right:10px;vertical-align:middle}
+.hright{display:flex;align-items:center;gap:12px;flex:none}
+.stamp{color:var(--dim2);font-size:12.5px;font-family:var(--mono);white-space:nowrap}
+
+/* ---- cards ---- */
+.card{
+  background:var(--panel); border:1px solid var(--line); border-radius:14px;
+  padding:22px 24px 24px; margin-bottom:22px;
+}
+.card > h2{
+  margin:0 0 4px; font-size:17px; font-weight:600; color:var(--fg2);
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+}
+.card > h2 .tag{font-size:12px;font-weight:400;color:var(--dim);letter-spacing:.3px}
+.lead{color:var(--dim);font-size:13.5px;margin:0 0 18px}
+.hr{height:1px;background:var(--line);margin:20px 0 18px;border:0}
+
+/* ---- tables / rows ---- */
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;color:var(--dim);font-weight:500;font-size:12.5px;padding:0 10px 7px 0;border-bottom:1px solid var(--line)}
+td{padding:8px 10px 8px 0;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+.tnext{font-family:var(--mono);font-size:13px;color:var(--dim)}
+.tlabel{font-size:13.5px;color:var(--fg2)}
+.tlabel .tt{font-family:var(--mono);font-size:13px;color:var(--accfg)}
+.tlabel .tdim{color:var(--dim);font-size:12.5px}
+
+.empty{
+  color:var(--dim); font-size:13.5px; background:var(--panel2); border:1px dashed var(--line2);
+  border-radius:10px; padding:14px 16px;
+}
+
+/* ---- session picker ---- */
+.slist{display:flex;flex-direction:column;gap:8px;margin-bottom:18px;max-height:330px;overflow-y:auto}
+.srow{
+  display:flex; gap:12px; align-items:flex-start; padding:11px 14px; cursor:pointer;
+  background:var(--panel2); border:1px solid var(--line); border-radius:11px; transition:border-color .15s,background .15s;
+}
+.srow:hover{border-color:var(--line2)}
+.srow.sel{border-color:var(--acc);background:var(--acc-bg)}
+.srow input{margin:4px 0 0;accent-color:var(--acc);flex:none;width:15px;height:15px}
+.srow .sbody{min-width:0;flex:1}
+.srow .l1{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.srow .sid{font-family:var(--mono);font-size:13px;color:var(--acc)}
+.srow .scwd{font-family:var(--mono);font-size:12.5px;color:var(--dim);word-break:break-all}
+.srow .ssnip{font-size:13px;color:var(--fg);opacity:.82;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srow .stime{font-size:12px;color:var(--dim2);margin-top:2px}
+
+/* ---- buttons ---- */
+.btns{display:flex;gap:14px;flex-wrap:wrap}
+.act{flex:1;min-width:250px}
+button{font:inherit;cursor:pointer;border-radius:11px;transition:background .15s,border-color .15s,opacity .15s}
+button:disabled{opacity:.45;cursor:not-allowed}
+.big{
+  width:100%; padding:15px 18px; font-size:15.5px; font-weight:600; text-align:center;
+  background:var(--panel2); color:var(--fg2); border:1px solid var(--line2);
+}
+.big:hover:not(:disabled){background:var(--hov)}
+.big.primary{background:var(--acc-bg);border-color:var(--acc-b);color:var(--accfg)}
+.big.primary:hover:not(:disabled){background:var(--acc-bg2);border-color:var(--acc)}
+.big.go{background:var(--ok-bg);border-color:var(--ok-b);color:var(--ok)}
+.big.go:hover:not(:disabled){background:var(--ok-bg2);border-color:var(--ok)}
+.hint{font-size:12.5px;color:var(--dim);margin:8px 2px 0;line-height:1.55}
+.mini{
+  padding:6px 13px;font-size:13px;background:transparent;color:var(--dim);
+  border:1px solid var(--line2);
+}
+.mini:hover:not(:disabled){color:var(--fg2);border-color:var(--dim)}
+.mini.warn:hover:not(:disabled){color:var(--bad);border-color:var(--bad-b)}
+.mini.on{color:var(--ok);border-color:var(--ok-b)}
+.mini.on:hover:not(:disabled){background:var(--ok-bg);color:var(--ok2)}
+
+/* ---- armed / done rows ---- */
+.lrow{
+  display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  padding:11px 14px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:11px;margin-bottom:8px;
+}
+.lrow .lbody{flex:1;min-width:180px}
+.lrow .lid{font-family:var(--mono);font-size:13px;color:var(--fg2)}
+.lrow .lsnip{font-size:13px;color:var(--fg);opacity:.82;margin-top:3px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.lrow .lcwd{font-family:var(--mono);font-size:12.5px;color:var(--dim);word-break:break-all}
+.badge{
+  display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:20px;
+  border:1px solid var(--line2);color:var(--dim);margin-left:8px;vertical-align:1px;
+}
+.badge.amber{color:var(--accfg);border-color:var(--acc-b);background:var(--acc-bg)}
+.badge.green{color:var(--ok);border-color:var(--ok-b);background:var(--ok-bg)}
+.badge.red{color:var(--bad);border-color:var(--bad-b);background:var(--bad-bg)}
+.badge select{background:transparent;border:0;color:inherit;font:inherit;font-size:11.5px;padding:0;cursor:pointer}
+.badge select:focus{outline:none}
+.badge option{background:var(--panel2);color:var(--fg)}
+.rowhead{display:flex;align-items:center;gap:12px;margin:0 0 10px}
+.rowhead .t{font-size:13px;color:var(--dim);flex:1}
+
+/* ---- schedule editor: one column per day, times stack inside ----
+   a single bordered panel with thin internal separators reads much calmer
+   than seven floating boxes; delete/add affordances only surface on hover */
+.wgrid{
+  display:grid;grid-template-columns:repeat(7,1fr);
+  background:var(--panel2);border:1px solid var(--line);border-radius:12px;overflow:hidden;
+}
+.wcol{
+  padding:10px 6px;min-height:112px;display:flex;flex-direction:column;gap:7px;
+  align-items:center;border-left:1px solid var(--line);
+}
+.wcol:first-child{border-left:0}
+.wcol.today{background:var(--today)}
+.wcol .wday{font-size:12px;color:var(--dim);letter-spacing:.5px}
+.wcol.today .wday{color:var(--accfg)}
+.tchip{
+  font-family:var(--mono);font-size:12.5px;color:var(--fg2);background:var(--bg);
+  border:1px solid var(--line2);border-radius:8px;padding:3px 4px 3px 8px;
+  display:inline-flex;gap:3px;align-items:center;white-space:nowrap;
+}
+.tchip b{cursor:pointer;color:var(--dim);font-weight:400;padding:0 4px;opacity:0;transition:opacity .12s}
+.tchip:hover b{opacity:1}
+.tchip b:hover{color:var(--bad)}
+.tchip .tt{cursor:pointer}
+.wadd{
+  padding:1px 10px;font-size:14px;background:transparent;color:var(--dim2);
+  border:1px dashed var(--line2);border-radius:8px;margin-top:auto;
+  opacity:.3;transition:opacity .12s;
+}
+.wcol:hover .wadd{opacity:1}
+.wadd:hover:not(:disabled){color:var(--fg2);border-color:var(--dim)}
+/* [type=time] in the selector: the generic input[type=time] rule below has
+   equal specificity and later position - without it this compact style loses
+   and the editor renders 14px/10px-padded inside an 88px box, clipping the
+   minutes and the clock icon */
+input[type=time].wtime{width:88px;max-width:100%;padding:3px 5px;font-size:12.5px}
+
+/* ---- one-shot preheat: three side-by-side boxes ---- */
+.ogrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.obox{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:12px 14px}
+.olbl{font-size:12.5px;color:var(--dim);margin-bottom:9px}
+.octl{display:flex;gap:8px;align-items:center}
+.octl input{flex:1;min-width:0;width:auto}
+input[type=time],input[type=number]{
+  font:inherit;font-family:var(--mono);font-size:14px;background:var(--bg);color:var(--fg2);
+  border:1px solid var(--line2);border-radius:9px;padding:7px 10px;
+}
+input[type=number]{width:74px}
+select{
+  font:inherit;font-size:13.5px;background:var(--bg);color:var(--fg2);
+  border:1px solid var(--line2);border-radius:9px;padding:6px 9px;
+}
+.lbl{font-size:13px;color:var(--dim)}
+.once{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:9px}
+.once .lbl{min-width:118px}
+
+/* ---- toast ---- */
+#toasts{position:fixed;right:20px;bottom:20px;z-index:50;display:flex;flex-direction:column;gap:10px;max-width:min(420px,calc(100vw - 40px))}
+.toast{
+  background:var(--panel2);border:1px solid var(--line2);
+  border-radius:10px;padding:11px 15px;font-size:13.5px;color:var(--fg2);
+  box-shadow:0 8px 26px rgba(0,0,0,.45);animation:pop .22s ease;word-break:break-word;
+}
+.toast.ok{border-color:var(--ok-b);background:var(--ok-bg);color:var(--ok2)}
+.toast.bad{border-color:var(--bad-b);background:var(--bad-bg);color:var(--bad)}
+@keyframes pop{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+@media (max-width:560px){
+  .wrap{padding:0 14px}
+  .card{padding-left:16px;padding-right:16px}
+  .act{min-width:100%}
+  .wcol{padding:7px 3px 5px}
+  .tchip{font-size:11px;padding:2px 3px 2px 5px}
+  .ogrid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<div id="offline" data-i18n="offline"></div>
+
+<div class="wrap">
+
+<header>
+  <h1><span class="dot"></span>Claude-Limit-Relay <span data-i18n="desk"></span></h1>
+  <div class="hright">
+    <span class="stamp" id="stamp"></span>
+    <button class="mini" id="btnLang"></button>
+    <button class="mini" id="btnRefresh" data-i18n="refresh"></button>
+  </div>
+</header>
+
+<!-- 1. preheat -->
+<section class="card" id="schedBox">
+  <h2 data-i18n="sched_h2"></h2>
+  <p class="lead" data-i18n="sched_lead"></p>
+  <div class="rowhead"><div class="t" data-i18n="sched_scheduled"></div></div>
+  <div id="tasks"></div>
+  <hr class="hr">
+  <div class="rowhead"><div class="t" data-i18n="sched_weekly"></div><span class="hint" style="margin:0" data-i18n="sched_weekly_hint"></span></div>
+  <div id="wkgrid" class="wgrid"></div>
+  <div class="btns" style="margin-top:12px;gap:10px">
+    <button class="mini on" id="btnApply" data-i18n="sched_apply"></button>
+  </div>
+  <p class="hint" id="schedNote"></p>
+  <hr class="hr">
+  <div class="rowhead"><div class="t" data-i18n="sched_once"></div><span class="hint" style="margin:0" data-i18n="sched_once_hint"></span></div>
+  <div class="ogrid">
+    <div class="obox">
+      <div class="olbl" data-i18n="once_reset_lbl"></div>
+      <div class="octl"><input type="time" id="onceReset" value="20:00"><button class="mini" data-once="reset" data-i18n="schedule_btn"></button></div>
+    </div>
+    <div class="obox">
+      <div class="olbl" data-i18n="once_at_lbl"></div>
+      <div class="octl"><input type="time" id="onceAt" value="15:00"><button class="mini" data-once="at" data-i18n="schedule_btn"></button></div>
+    </div>
+    <div class="obox">
+      <div class="olbl" data-i18n="once_plus_lbl"></div>
+      <div class="octl"><input type="number" id="oncePlus" value="2" min="1" max="72" step="1"><span class="lbl" data-i18n="hours"></span><button class="mini" data-once="plus" data-i18n="schedule_btn"></button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 2. relay -->
+<section class="card">
+  <h2 data-i18n="relay_h2"></h2>
+  <p class="lead" data-i18n="relay_lead"></p>
+  <div id="sessions"></div>
+  <div class="btns">
+    <div class="act">
+      <button class="big" id="btnWatch" data-i18n="btn_watch"></button>
+      <p class="hint" data-i18n="watch_hint"></p>
+    </div>
+    <div class="act">
+      <button class="big" id="btnArm" data-i18n="btn_arm"></button>
+      <p class="hint" data-i18n="arm_hint"></p>
+    </div>
+  </div>
+  <div class="once" style="margin-top:16px">
+    <span class="lbl" data-i18n="maxlegs_lbl"></span>
+    <select id="maxLegs">
+      <option value="1" data-i18n="leg1"></option>
+      <option value="2" data-i18n="leg2"></option>
+      <option value="3" selected data-i18n="leg3"></option>
+      <option value="4" data-i18n="leg4"></option>
+      <option value="5" data-i18n="leg5"></option>
+    </select>
+    <span class="hint" style="margin:0" data-i18n="legs_hint"></span>
+  </div>
+  <div class="once">
+    <span class="lbl" data-i18n="fb_lbl"></span>
+    <select id="fbMode">
+      <option value="" selected data-i18n="fb_opus"></option>
+      <option value="none" data-i18n="fb_none"></option>
+    </select>
+    <span class="hint" style="margin:0" data-i18n="fb_hint"></span>
+  </div>
+  <hr class="hr">
+  <div class="rowhead">
+    <div class="t" data-i18n="queue"></div>
+    <button class="mini warn" id="btnDisarmAll" data-i18n="cancel_all"></button>
+  </div>
+  <div id="armed"></div>
+</section>
+
+<!-- 3. takeover -->
+<section class="card">
+  <h2 data-i18n="take_h2"></h2>
+  <p class="lead" data-i18n="take_lead"></p>
+  <div class="rowhead">
+    <div class="t" data-i18n="take_done"></div>
+    <button class="mini on" id="btnTakeAll" data-i18n="take_all"></button>
+    <button class="mini warn" id="btnClearDone" data-i18n="clear_list"></button>
+  </div>
+  <div id="done"></div>
+</section>
+
+</div>
+
+<div id="toasts"></div>
+
+<script>
+(function(){
+'use strict';
+
+/* ---------- i18n ---------- */
+var LANG = (function(){ try { return localStorage.getItem('clr_lang') === 'en' ? 'en' : 'zh'; } catch(e){ return 'zh'; } })();
+var I18N = {
+  zh: {
+    title:'Claude-Limit-Relay 控制台', desk:'控制台', refresh:'刷新', loading:'加载中…',
+    offline:'后端没连上 —— 请运行 <span class="mono">claude-panel</span>（或 <span class="mono">./panel.ps1</span>），然后刷新本页（页面每分钟会自己重试）。',
+    sched_h2:'额度窗口预热',
+    sched_lead:'填<b>希望窗口重置的时刻</b>，预热时刻自动 = 该时刻减 5 小时。',
+    sched_scheduled:'已排定的预热', sched_weekly:'每周固定', sched_weekly_hint:'每列一天，点 + 加时刻',
+    sched_apply:'保存并应用', sched_once:'临时预热诉求', sched_once_hint:'只生效一次',
+    once_reset_lbl:'让窗口重置于', once_at_lbl:'就在这个点预热', once_plus_lbl:'几小时之后预热',
+    hours:'小时', schedule_btn:'排定',
+    relay_h2:'跨额度任务排布', relay_lead:'选一个对话挂上，撞限后自动等窗口重开、在原对话上续跑。',
+    btn_watch:'还没撞限 · 站岗', watch_hint:'只读对话记录：撞限被掐就转入续跑，正常跑完自动撤下。',
+    btn_arm:'已经撞限 · 排上', arm_hint:'窗口一重开立刻续跑。',
+    maxlegs_lbl:'最多接力次数', leg1:'1 次', leg2:'2 次', leg3:'3 次（推荐）', leg4:'4 次', leg5:'5 次',
+    legs_hint:'每次接力占用一个新窗口。',
+    fb_lbl:'撞到模型周限时', fb_opus:'换 opus 跑完（推荐）', fb_none:'不换模型 · 停下等我',
+    fb_hint:'5 小时窗口开着、这个模型自己的周限却见底时怎么办。',
+    queue:'任务队列', cancel_all:'全部取消',
+    take_h2:'跨额度任务窗口接续', take_lead:'接管 = 开一个终端标签页，回到原目录、挂载原对话继续。',
+    take_done:'已结束的接力', take_all:'全部接管', clear_list:'清空列表',
+    ago_now:'刚刚', ago_min:'{n} 分钟前', ago_hr:'{n} 小时前', ago_day:'{n} 天前',
+    unknown_dir:'（未知目录）', toast_done:'已完成', toast_err:'出错了',
+    reset_word:'重置', once_task:'一次性预热', no_tasks:'还没排定预热。',
+    th_scheduled:'排定', th_next:'下次预热', no_sessions:'没找到最近的对话。', last_activity:'最后活动',
+    badge_watch:'站岗中', badge_parked:'已停下 · 模型周限',
+    badge_parked_title:'模型周限耗尽且选了不换模型。接管后自行决定，或取消排布。',
+    badge_waiting:'等窗口重开', badge_running:'正在续跑', legs_label:'已接力', legs_title:'改接力上限，立即生效',
+    take:'接管', cancel:'取消', remove:'移除', queue_empty:'队列是空的。',
+    confirm_take:'这个对话几分钟前还有往来，原窗口可能还开着。\n再开一个交互窗口会双写同一份对话，确定接管？',
+    done_ok:'✅ 完成', done_fail:'⚠️ 没跑完', no_done:'还没有已结束的接力。',
+    schednote_derived:'这张表由已注册任务反推（预热时刻 + 5 小时 = 重置时刻）。',
+    stamp_updated:'更新于 ', stamp_lost:'连接中断，重试中…',
+    chip_edit_title:'点击修改', chip_del_title:'删除', wadd_title:'加一个重置时刻',
+    m_cancelled:'已取消', m_opened_tab:'已在新标签页打开', m_removed:'已移除', m_all_cancelled:'已全部取消',
+    m_all_opened:'已全部打开', m_cleared:'已清空', m_saved:'已保存并生效', m_scheduled:'已排定',
+    m_guarding:'已开始站岗', m_queued:'已排上', m_unqueued_tab:'已取消排布并在新标签页打开',
+    op_failed:'操作失败', not_json:'后端返回的不是 JSON', no_backend:'没连上后端：',
+    pick_first:'先在上面选一个对话', no_times:'一个时刻都没有；想全部清掉请用命令行 preheat off',
+    bad_hours:'小时数填个 1 以上的整数', bad_time:'时刻格式要是 HH:mm', langBtn:'EN'
+  },
+  en: {
+    title:'Claude-Limit-Relay Control Desk', desk:'Control Desk', refresh:'Refresh', loading:'Loading…',
+    offline:'Backend not connected — run <span class="mono">claude-panel</span> (or <span class="mono">./panel.ps1</span>), then refresh this page (it retries every minute).',
+    sched_h2:'Usage-window preheat',
+    sched_lead:'Enter <b>the time you want the window to reset</b>; the fire time is automatically that minus 5 hours.',
+    sched_scheduled:'Scheduled preheats', sched_weekly:'Weekly', sched_weekly_hint:'One column per day; click + to add a time',
+    sched_apply:'Save & apply', sched_once:'One-shot preheat', sched_once_hint:'Fires once',
+    once_reset_lbl:'Reset the window at', once_at_lbl:'Fire at this time', once_plus_lbl:'Fire N hours from now',
+    hours:'hours', schedule_btn:'Schedule',
+    relay_h2:'Cross-window task relay', relay_lead:'Pick a conversation; on a limit hit it waits for the window to reopen and resumes in the same conversation.',
+    btn_watch:'Not limited yet · stand guard', watch_hint:'Reads the transcript only: switches to resume if the limit kills it, stands down on a normal finish.',
+    btn_arm:'Already limited · queue', arm_hint:'Resumes the moment the window reopens.',
+    maxlegs_lbl:'Max relay legs', leg1:'1', leg2:'2', leg3:'3 (recommended)', leg4:'4', leg5:'5',
+    legs_hint:'Each leg uses one more window.',
+    fb_lbl:'On a model weekly cap', fb_opus:'Hop to opus (recommended)', fb_none:'Keep model · stop and wait',
+    fb_hint:'What to do when the 5h window is open but this model’s own weekly cap is spent.',
+    queue:'Queue', cancel_all:'Cancel all',
+    take_h2:'Takeover', take_lead:'Takeover opens a terminal tab back in the original directory and mounts the conversation to continue.',
+    take_done:'Finished relays', take_all:'Take over all', clear_list:'Clear list',
+    ago_now:'just now', ago_min:'{n} min ago', ago_hr:'{n} h ago', ago_day:'{n} d ago',
+    unknown_dir:'(unknown dir)', toast_done:'Done', toast_err:'Something went wrong',
+    reset_word:'reset', once_task:'One-shot preheat', no_tasks:'No preheats scheduled yet.',
+    th_scheduled:'Scheduled', th_next:'Next fire', no_sessions:'No recent conversations found.', last_activity:'Last activity',
+    badge_watch:'On guard', badge_parked:'Stopped · model cap',
+    badge_parked_title:'Model weekly cap spent and you chose not to switch. Take over to decide, or cancel.',
+    badge_waiting:'Waiting for reset', badge_running:'Resuming', legs_label:'Legs', legs_title:'Change leg cap, applies immediately',
+    take:'Take over', cancel:'Cancel', remove:'Remove', queue_empty:'Queue is empty.',
+    confirm_take:'This conversation had activity minutes ago; its original window may still be open.\nOpening a second interactive window double-writes the same conversation. Take over anyway?',
+    done_ok:'✅ Done', done_fail:'⚠️ Unfinished', no_done:'No finished relays yet.',
+    schednote_derived:'This table is inferred from registered tasks (fire time + 5h = reset time).',
+    stamp_updated:'Updated ', stamp_lost:'Connection lost, retrying…',
+    chip_edit_title:'Click to edit', chip_del_title:'Delete', wadd_title:'Add a reset time',
+    m_cancelled:'Cancelled', m_opened_tab:'Opened in a new tab', m_removed:'Removed', m_all_cancelled:'All cancelled',
+    m_all_opened:'All opened', m_cleared:'Cleared', m_saved:'Saved & applied', m_scheduled:'Scheduled',
+    m_guarding:'Standing guard', m_queued:'Queued', m_unqueued_tab:'Unqueued and opened in a new tab',
+    op_failed:'Operation failed', not_json:'Backend did not return JSON', no_backend:'Backend not reachable: ',
+    pick_first:'Pick a conversation above first', no_times:'No times set; to clear everything use preheat off on the command line',
+    bad_hours:'Enter a whole number of hours ≥ 1', bad_time:'Time must be HH:mm', langBtn:'中文'
+  }
+};
+function t(k){ var d = I18N[LANG] || I18N.zh; return (k in d) ? d[k] : (I18N.zh[k] != null ? I18N.zh[k] : k); }
+
+var DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+var DAYCN = {Mon:'一',Tue:'二',Wed:'三',Thu:'四',Fri:'五',Sat:'六',Sun:'日'};
+function dayShort(d){ return LANG === 'en' ? d : DAYCN[d]; }
+var state = { status:null, sessions:[], pick:null, sesKey:'', busy:false, stamp:null, schedLoaded:false };
+
+/* ---------- utils ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function pad(n){ return (n < 10 ? '0' : '') + n; }
+function parseDate(v){
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  var s = String(v);
+  var m = /\/Date\((-?\d+)/.exec(s);
+  if (m) { var d0 = new Date(parseInt(m[1],10)); return isNaN(d0.getTime()) ? null : d0; }
+  var d = new Date(s);
+  if (isNaN(d.getTime())) d = new Date(s.replace(' ','T'));
+  if (isNaN(d.getTime())) d = new Date(s.replace(/-/g,'/').replace('T',' ').replace(/\..*$/,''));
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmtDT(v){
+  var d = parseDate(v);
+  if (!d) return v ? String(v) : '—';
+  return pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+function ago(v){
+  var d = parseDate(v);
+  if (!d) return '';
+  var s = Math.round((Date.now() - d.getTime()) / 1000);
+  if (s < 0) s = 0;
+  if (s < 60) return t('ago_now');
+  if (s < 3600) return t('ago_min').replace('{n}', Math.floor(s/60));
+  if (s < 86400) return t('ago_hr').replace('{n}', Math.floor(s/3600));
+  return t('ago_day').replace('{n}', Math.floor(s/86400));
+}
+function tail(p, n){
+  if (!p) return t('unknown_dir');
+  var parts = String(p).replace(/[\\\/]+$/,'').split(/[\\\/]/);
+  return parts.slice(Math.max(0, parts.length - (n||2))).join('\\');
+}
+function toast(ok, msg){
+  var box = $('toasts');
+  var el = document.createElement('div');
+  el.className = 'toast ' + (ok ? 'ok' : 'bad');
+  el.textContent = (ok ? '✅ ' : '⚠️ ') + (msg || (ok ? t('toast_done') : t('toast_err')));
+  box.appendChild(el);
+  setTimeout(function(){
+    el.style.transition = 'opacity .3s'; el.style.opacity = '0';
+    setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 320);
+  }, 4200);
+}
+function setOnline(on){ $('offline').className = on ? '' : 'on'; }
+
+/* ---------- transport ---------- */
+function getJSON(path){
+  return fetch(path, { cache:'no-store' }).then(function(r){
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  });
+}
+function postJSON(path, body){
+  return fetch(path, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body || {})
+  }).then(function(r){
+    return r.json().catch(function(){ return { ok:r.ok, message:t('not_json') }; });
+  });
+}
+function act(path, body, okMsg){
+  if (state.busy) return Promise.resolve(false);
+  state.busy = true; setBusy(true);
+  return postJSON(path, body).then(function(res){
+    var ok = !!(res && res.ok);
+    toast(ok, (res && res.message) ? res.message : (ok ? okMsg : t('op_failed')));
+    return refreshStatus().then(refreshSessions).then(function(){ return ok; });
+  }).catch(function(e){
+    setOnline(false); toast(false, t('no_backend') + e.message);
+    return false;
+  }).then(function(ok){
+    state.busy = false; setBusy(false);
+    return ok;
+  });
+}
+function setBusy(b){
+  var btns = document.querySelectorAll('button');
+  for (var i = 0; i < btns.length; i++) btns[i].disabled = b;
+  if (!b) updateApplyState();   // un-busy re-enabled every button; re-apply the dirty gate
+}
+
+/* ---------- 1. scheduled preheats ---------- */
+function taskLabel(task){
+  // registered task names encode the FIRE time (ClaudePreheat-Wk-0130-FriSat);
+  // the grid below speaks in RESET times - translate so the two blocks
+  // visibly correspond (raw name stays in the row tooltip)
+  var m = /^ClaudePreheat-Wk-(\d{2})(\d{2})-(.+)$/.exec(String(task.name || ''));
+  if (m) {
+    var days = String(m[3]).match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/g) || [];
+    var mins = parseInt(m[1],10) * 60 + parseInt(m[2],10);
+    var rm = mins + 300, shift = 0;
+    if (rm >= 1440) { rm -= 1440; shift = 1; }
+    var dn = days.map(function(d){ return dayShort(DAYS[(DAYS.indexOf(d) + shift) % 7]); });
+    var resetHM = pad(Math.floor(rm/60)) + ':' + pad(rm%60);
+    var fireHM = pad(Math.floor(mins/60)) + ':' + pad(mins%60);
+    if (LANG === 'en') {
+      return '<span class="tt">' + resetHM + '</span> ' + t('reset_word') +
+        ' <span class="tdim">(fire ' + fireHM + ')</span> · ' + dn.join(', ');
+    }
+    return '<span class="tt">' + resetHM + '</span> ' + t('reset_word') +
+      '<span class="tdim">（' + fireHM + ' 预热）</span> · 周' + dn.join('·');
+  }
+  if (/^ClaudePreheat-Once-/.test(String(task.name || ''))) return t('once_task');
+  return esc(task.name);
+}
+function renderTasks(){
+  var ig = (state.status && state.status.preheat) ? state.status.preheat : {};
+  var tasks = ig.tasks || [];
+  if (!tasks.length) {
+    $('tasks').innerHTML = '<div class="empty">' + t('no_tasks') + '</div>';
+  } else {
+    var rows = tasks.map(function(tk){
+      return '<tr title="' + esc(tk.name) + '"><td class="tlabel">' + taskLabel(tk) + '</td><td class="tnext">' + esc(fmtDT(tk.next)) + '</td></tr>';
+    }).join('');
+    $('tasks').innerHTML = '<table><thead><tr><th>' + t('th_scheduled') + '</th><th style="width:130px">' + t('th_next') + '</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+}
+
+/* ---------- 2. sessions + armed ---------- */
+function renderSessions(){
+  var list = state.sessions || [];
+  var box = $('sessions');
+  if (!list.length) {
+    box.innerHTML = '<div class="empty" style="margin-bottom:18px">' + t('no_sessions') + '</div>';
+    return;
+  }
+  if (!state.pick || !list.some(function(s){ return s.session === state.pick; })) {
+    state.pick = list[0].session;
+  }
+  var html = '<div class="slist">';
+  list.forEach(function(s){
+    var sel = (s.session === state.pick);
+    html +=
+      '<label class="srow' + (sel ? ' sel' : '') + '" data-sid="' + esc(s.session) + '">' +
+        '<input type="radio" name="sess" value="' + esc(s.session) + '"' + (sel ? ' checked' : '') + '>' +
+        '<div class="sbody">' +
+          '<div class="l1"><span class="sid">' + esc(String(s.session).slice(0,8)) + '</span>' +
+            '<span class="scwd">' + esc(tail(s.cwd, 2)) + '</span></div>' +
+          (s.snippet ? '<div class="ssnip">' + esc(s.snippet) + '</div>' : '') +
+          '<div class="stime">' + t('last_activity') + ' ' + esc(fmtDT(s.mtime)) + '　' + esc(ago(s.mtime)) + '</div>' +
+        '</div>' +
+      '</label>';
+  });
+  html += '</div>';
+  box.innerHTML = html;
+  var rows = box.querySelectorAll('.srow');
+  for (var i = 0; i < rows.length; i++) {
+    rows[i].addEventListener('click', function(){
+      state.pick = this.getAttribute('data-sid');
+      var all = box.querySelectorAll('.srow');
+      for (var j = 0; j < all.length; j++) {
+        var on = all[j].getAttribute('data-sid') === state.pick;
+        all[j].className = 'srow' + (on ? ' sel' : '');
+        all[j].querySelector('input').checked = on;
+      }
+    });
+  }
+}
+
+function renderArmed(){
+  var rel = (state.status && state.status.relay) ? state.status.relay : {};
+  var arr = rel.armed || [];
+  var box = $('armed');
+  $('btnDisarmAll').style.display = arr.length ? '' : 'none';
+  if (!arr.length) {
+    box.innerHTML = '<div class="empty">' + t('queue_empty') + '</div>';
+    return;
+  }
+  box.innerHTML = arr.map(function(a){
+    var mode = (a.mode === 'watch')
+      ? '<span class="badge amber">' + t('badge_watch') + '</span>'
+      : (a.mode === 'parked')
+        ? '<span class="badge red" title="' + esc(t('badge_parked_title')) + '">' + t('badge_parked') + '</span>'
+        : '<span class="badge green">' + t('badge_waiting') + '</span>';
+    var run = a.running ? '<span class="badge amber">' + t('badge_running') + '</span>' : '';
+    var opts = '';
+    for (var n = 1; n <= 5; n++) {
+      opts += '<option value="' + n + '"' + (n === (a.maxLegs|0) ? ' selected' : '') + '>' + n + '</option>';
+    }
+    if ((a.maxLegs|0) > 5) opts += '<option value="' + (a.maxLegs|0) + '" selected>' + (a.maxLegs|0) + '</option>';
+    var legs = '<span class="badge">' + t('legs_label') + ' ' + esc(a.legs) + ' / ' +
+      '<select data-legs="' + esc(a.session) + '" title="' + esc(t('legs_title')) + '">' + opts + '</select></span>';
+    return '<div class="lrow">' +
+      '<div class="lbody">' +
+        '<div><span class="lid">' + esc(String(a.session).slice(0,8)) + '</span>' + mode + legs + run + '</div>' +
+        (a.snippet ? '<div class="lsnip">' + esc(a.snippet) + '</div>' : '') +
+        '<div class="lcwd">' + esc(a.cwd || '') + '</div>' +
+      '</div>' +
+      '<button class="mini on" data-take="' + esc(a.session) + '">' + t('take') + '</button>' +
+      '<button class="mini warn" data-disarm="' + esc(a.session) + '">' + t('cancel') + '</button>' +
+    '</div>';
+  }).join('');
+  bindAll(box, 'data-disarm', function(sid){
+    act('/api/relay/disarm', { session: sid }, t('m_cancelled'));
+  });
+  // taking over an armed session cancels it first (relay.ps1 disarms, killing
+  // any in-flight leg) so the new TUI is the only writer; if the transcript
+  // moved within the last 5 min the ORIGINAL window is probably still open -
+  // confirm before opening a second one onto the same conversation
+  bindAll(box, 'data-take', function(sid){
+    var a = null;
+    for (var i = 0; i < arr.length; i++) if (arr[i].session === sid) a = arr[i];
+    if (a && a.activity) {
+      var d = parseDate(a.activity);
+      if (d && (Date.now() - d.getTime()) < 5 * 60000) {
+        if (!confirm(t('confirm_take'))) return;
+      }
+    }
+    act('/api/relay/takeover', { session: sid }, t('m_unqueued_tab'));
+  });
+  var sels = box.querySelectorAll('[data-legs]');
+  for (var si = 0; si < sels.length; si++) {
+    sels[si].addEventListener('click', function(ev){ ev.stopPropagation(); });
+    sels[si].addEventListener('change', function(ev){
+      ev.stopPropagation();
+      act('/api/relay/legs', { session: this.getAttribute('data-legs'), maxLegs: parseInt(this.value, 10) }, t('m_saved'));
+    });
+  }
+}
+
+/* ---------- 3. done ---------- */
+function renderDone(){
+  var rel = (state.status && state.status.relay) ? state.status.relay : {};
+  var arr = rel.done || [];
+  var box = $('done');
+  $('btnTakeAll').style.display = arr.length ? '' : 'none';
+  $('btnClearDone').style.display = arr.length ? '' : 'none';
+  if (!arr.length) {
+    box.innerHTML = '<div class="empty">' + t('no_done') + '</div>';
+    return;
+  }
+  box.innerHTML = arr.map(function(d){
+    var b = d.ok ? '<span class="badge green">' + t('done_ok') + '</span>' : '<span class="badge red">' + t('done_fail') + '</span>';
+    var tm = d.finishedAt ? '<span class="badge">' + esc(fmtDT(d.finishedAt)) + '</span>' : '';
+    return '<div class="lrow">' +
+      '<div class="lbody">' +
+        '<div><span class="lid">' + esc(String(d.session).slice(0,8)) + '</span>' + b + tm + '</div>' +
+        (d.snippet ? '<div class="lsnip">' + esc(d.snippet) + '</div>' : '') +
+        '<div class="lcwd">' + esc(d.cwd || '') + '</div>' +
+      '</div>' +
+      '<button class="mini on" data-take="' + esc(d.session) + '">' + t('take') + '</button>' +
+      '<button class="mini warn" data-dismiss="' + esc(d.session) + '">' + t('remove') + '</button>' +
+    '</div>';
+  }).join('');
+  bindAll(box, 'data-take', function(sid){
+    act('/api/relay/takeover', { session: sid }, t('m_opened_tab'));
+  });
+  bindAll(box, 'data-dismiss', function(sid){
+    act('/api/relay/dismiss', { session: sid }, t('m_removed'));
+  });
+}
+
+function bindAll(box, attr, fn){
+  var bs = box.querySelectorAll('[' + attr + ']');
+  for (var i = 0; i < bs.length; i++) {
+    bs[i].addEventListener('click', function(ev){
+      ev.stopPropagation();
+      fn(this.getAttribute(attr));
+    });
+  }
+}
+
+/* ---------- 4. weekly schedule editor (7-day grid) ---------- */
+// one column per day, times stack inside: the table stays one grid tall no
+// matter how many rules exist (a row-per-rule editor grew without bound).
+// week{} is the working model; collectRules() folds identical times across
+// days back into {days, reset} rules, so the payload preheat apply takes is
+// unchanged.
+var week = {};
+DAYS.forEach(function(d){ week[d] = []; });
+var savedKey = '[]';   // last saved shape; apply greys out until something differs
+
+function keyOf(){ return JSON.stringify(collectRules()); }
+function updateApplyState(){ $('btnApply').disabled = state.busy || (keyOf() === savedKey); }
+
+function addTime(day, val){
+  if (!/^\d{2}:\d{2}$/.test(val)) { renderWeek(); return; }
+  if (week[day].indexOf(val) < 0) { week[day].push(val); week[day].sort(); }
+  renderWeek();
+}
+function timeEditor(day, oldVal){
+  // one editor for both add (oldVal='') and in-place edit. Commit on blur or
+  // Enter ONLY - Chromium fires `change` on every keystroke of a time input,
+  // so committing there kicks the user out after one digit. Blur commits
+  // synchronously so a click on Save & apply in the same gesture sees the edit.
+  var inp = document.createElement('input');
+  inp.type = 'time'; inp.className = 'wtime';
+  if (oldVal) inp.value = oldVal;
+  var done = false;
+  function commit(){
+    if (done) return; done = true;
+    var v = inp.value;
+    if (/^\d{2}:\d{2}$/.test(v) && v !== oldVal) {
+      if (oldVal) week[day] = week[day].filter(function(tm){ return tm !== oldVal; });
+      addTime(day, v);   // dedupes, sorts, re-renders, refreshes the dirty gate
+    } else renderWeek(); // untouched or cleared: put the chip/+ back as it was
+  }
+  inp.addEventListener('blur', commit);
+  inp.addEventListener('keydown', function(e){
+    if (e.key === 'Enter') commit();
+    if (e.key === 'Escape') { done = true; renderWeek(); }
+  });
+  return inp;
+}
+function openTimeEditor(day, oldVal, replaceNode){
+  var inp = timeEditor(day, oldVal);
+  replaceNode.parentNode.replaceChild(inp, replaceNode);
+  inp.focus();
+  try { inp.showPicker(); } catch (e) { }   // pop the clock picker right away
+}
+function renderWeek(){
+  var host = $('wkgrid');
+  var todayIdx = (new Date().getDay() + 6) % 7;   // Mon=0 .. Sun=6
+  var html = '';
+  DAYS.forEach(function(d, i){
+    var wday = LANG === 'en' ? d : '周' + DAYCN[d];
+    html += '<div class="wcol' + (i === todayIdx ? ' today' : '') + '">' +
+      '<div class="wday">' + wday + '</div>' +
+      week[d].map(function(tm){
+        return '<span class="tchip"><span class="tt" data-edit="' + d + '|' + esc(tm) + '" title="' + esc(t('chip_edit_title')) + '">' + esc(tm) + '</span>' +
+          '<b data-del="' + d + '|' + esc(tm) + '" title="' + esc(t('chip_del_title')) + '">×</b></span>';
+      }).join('') +
+      '<button class="wadd" data-add="' + d + '" title="' + esc(t('wadd_title')) + '">+</button>' +
+    '</div>';
+  });
+  host.innerHTML = html;
+  var eds = host.querySelectorAll('[data-edit]');
+  for (var j = 0; j < eds.length; j++) {
+    eds[j].addEventListener('click', function(ev){
+      ev.stopPropagation();
+      var p = this.getAttribute('data-edit').split('|');
+      openTimeEditor(p[0], p[1], this.parentNode);   // swap the whole chip for the picker
+    });
+  }
+  bindAll(host, 'data-del', function(v){
+    var p = v.split('|');
+    week[p[0]] = week[p[0]].filter(function(tm){ return tm !== p[1]; });
+    renderWeek();
+  });
+  var adds = host.querySelectorAll('[data-add]');
+  for (var i = 0; i < adds.length; i++) {
+    adds[i].addEventListener('click', function(ev){
+      ev.stopPropagation();
+      openTimeEditor(this.getAttribute('data-add'), '', this);
+    });
+  }
+  updateApplyState();
+}
+function collectRules(){
+  var byTime = {};
+  DAYS.forEach(function(d){
+    week[d].forEach(function(tm){ (byTime[tm] = byTime[tm] || []).push(d); });
+  });
+  return Object.keys(byTime).sort().map(function(tm){
+    return { days: byTime[tm], reset: tm };
+  });
+}
+function seedRules(rules){
+  (rules || []).forEach(function(r){
+    (r.days || []).forEach(function(d){
+      if (week[d] && /^\d{2}:\d{2}$/.test(r.reset) && week[d].indexOf(r.reset) < 0) week[d].push(r.reset);
+    });
+  });
+  DAYS.forEach(function(d){ week[d].sort(); });
+  savedKey = keyOf();
+  renderWeek();
+}
+function rulesFromTasks(tasks){
+  var out = [];
+  (tasks || []).forEach(function(tk){
+    var m = /ClaudePreheat-Wk-(\d{2})(\d{2})-(.+)$/.exec(String(tk.name || ''));
+    if (!m) return;
+    var days = String(m[3]).match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/g);
+    if (!days || !days.length) return;
+    var mins = parseInt(m[1],10) * 60 + parseInt(m[2],10) + 300;   // fire + 5h = reset
+    var shift = 0;
+    if (mins >= 1440) { mins -= 1440; shift = 1; }
+    var reset = pad(Math.floor(mins/60)) + ':' + pad(mins % 60);
+    var rd = days.map(function(d){ return DAYS[(DAYS.indexOf(d) + shift) % 7]; });
+    out.push({ days: rd, reset: reset });
+  });
+  return out;
+}
+function seedScheduleFallback(){
+  var ig = (state.status && state.status.preheat) ? state.status.preheat : {};
+  var rules = rulesFromTasks(ig.tasks);
+  seedRules(rules);
+  $('schedNote').textContent = rules.length ? t('schednote_derived') : '';
+}
+function seedSchedule(){
+  if (state.schedLoaded) return;
+  state.schedLoaded = true;
+  getJSON('/api/schedule').then(function(sched){
+    var rules = (sched && Array.isArray(sched.rules)) ? sched.rules : [];
+    if (rules.length) {
+      seedRules(rules);
+    } else {
+      seedScheduleFallback();
+    }
+  }).catch(function(){
+    seedScheduleFallback();
+  });
+}
+
+/* ---------- refresh loops ---------- */
+function refreshStatus(){
+  return getJSON('/api/status').then(function(s){
+    state.status = s; state.stamp = new Date(); setOnline(true);
+    renderTasks(); renderArmed(); renderDone(); seedSchedule(); tickStamp();
+  }).catch(function(){
+    setOnline(false);
+    $('stamp').textContent = t('stamp_lost');
+  });
+}
+function refreshSessions(){
+  return getJSON('/api/sessions').then(function(list){
+    state.sessions = Array.isArray(list) ? list : [];
+    var key = state.sessions.map(function(s){ return s.session + '|' + s.mtime; }).join(',');
+    if (key !== state.sesKey) { state.sesKey = key; renderSessions(); }
+    setOnline(true);
+  }).catch(function(){ setOnline(false); });
+}
+function tickStamp(){
+  if (!state.stamp) return;
+  $('stamp').textContent = t('stamp_updated') + ago(state.stamp);
+}
+
+/* ---------- i18n application + language toggle ---------- */
+function applyStatic(){
+  document.documentElement.lang = (LANG === 'en') ? 'en' : 'zh-CN';
+  document.title = t('title');
+  var nodes = document.querySelectorAll('[data-i18n]');
+  for (var i = 0; i < nodes.length; i++) {
+    var key = nodes[i].getAttribute('data-i18n');
+    var val = t(key);
+    if (/[<>]/.test(val)) nodes[i].innerHTML = val;
+    else nodes[i].textContent = val;
+  }
+  $('btnLang').textContent = t('langBtn');
+}
+function rerenderDynamic(){
+  renderWeek(); renderSessions();
+  renderTasks(); renderArmed(); renderDone();
+  if (state.status && state.status.preheat) {
+    var ig = state.status.preheat;
+    var rules = rulesFromTasks(ig.tasks);
+    if ($('schedNote').textContent) $('schedNote').textContent = rules.length ? t('schednote_derived') : '';
+  }
+  tickStamp();
+}
+function setLang(lang){
+  LANG = (lang === 'en') ? 'en' : 'zh';
+  try { localStorage.setItem('clr_lang', LANG); } catch (e) { }
+  applyStatic();
+  rerenderDynamic();
+}
+
+/* ---------- wiring ---------- */
+$('btnLang').addEventListener('click', function(){ setLang(LANG === 'en' ? 'zh' : 'en'); });
+$('btnRefresh').addEventListener('click', function(){ refreshStatus(); refreshSessions(); });
+$('btnWatch').addEventListener('click', function(){ doArm(true); });
+$('btnArm').addEventListener('click', function(){ doArm(false); });
+function doArm(watch){
+  if (!state.pick) { toast(false, t('pick_first')); return; }
+  var payload = {
+    session: state.pick,
+    watch: !!watch,
+    maxLegs: parseInt($('maxLegs').value, 10) || 3
+  };
+  if ($('fbMode').value) payload.fallback = $('fbMode').value;
+  act('/api/relay/arm', payload, watch ? t('m_guarding') : t('m_queued'));
+}
+$('btnDisarmAll').addEventListener('click', function(){ act('/api/relay/disarm', {}, t('m_all_cancelled')); });
+$('btnTakeAll').addEventListener('click', function(){ act('/api/relay/takeover', { all:true }, t('m_all_opened')); });
+$('btnClearDone').addEventListener('click', function(){ act('/api/relay/dismiss', { all:true }, t('m_cleared')); });
+$('btnApply').addEventListener('click', function(){
+  var rules = collectRules();
+  if (!rules.length) { toast(false, t('no_times')); return; }
+  act('/api/preheat/apply', { rules: rules }, t('m_saved')).then(function(ok){
+    if (ok) savedKey = keyOf();
+    updateApplyState();
+  });
+});
+var onceBtns = document.querySelectorAll('[data-once]');
+for (var k = 0; k < onceBtns.length; k++) {
+  onceBtns[k].addEventListener('click', function(){
+    var kind = this.getAttribute('data-once');
+    var value;
+    if (kind === 'reset') value = $('onceReset').value;
+    else if (kind === 'at') value = $('onceAt').value;
+    else {
+      var n = parseInt($('oncePlus').value, 10);
+      if (!n || n < 1) { toast(false, t('bad_hours')); return; }
+      value = n + 'h';
+    }
+    if (kind !== 'plus' && !/^\d{2}:\d{2}$/.test(value)) { toast(false, t('bad_time')); return; }
+    act('/api/preheat/once', { kind: kind, value: value }, t('m_scheduled'));
+  });
+}
+
+/* ---------- boot ---------- */
+applyStatic();
+renderWeek();
+refreshStatus();
+refreshSessions();
+setInterval(refreshStatus, 60000);
+setInterval(refreshSessions, 300000);
+setInterval(tickStamp, 30000);
+
+})();
+</script>
+</body>
+</html>
