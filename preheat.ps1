@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 claude-limit-relay -- Claude Max 5h usage-window preheater (P1) + phase observer (P3)
 
@@ -285,6 +285,7 @@ function Invoke-Fire {
         try {
             $p = Start-Process -FilePath $claude -ArgumentList $pingArgs -WorkingDirectory $FirePit `
                 -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru -NoNewWindow
+            $null = $p.Handle   # PS 5.1: without touching Handle first, ExitCode reads null forever
             if (-not $p.WaitForExit(240000)) {
                 try { $p.Kill() } catch { }
                 throw 'timeout after 240s'
@@ -471,20 +472,28 @@ function Get-LearnReport($stamps, $now) {
         if (-not $byDay[$d]) { $byDay[$d] = New-Object System.Collections.Generic.List[object] }
         [void]$byDay[$d].Add($w.anchor.TimeOfDay)
     }
+    $dayOrder = @('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
     $days = @()
-    foreach ($d in @('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')) {
+    foreach ($d in $dayOrder) {
         if (-not $byDay[$d]) { continue }
         $ts = $byDay[$d]
         $median = Get-MedianTimeOfDay $ts
         $suggest = $null
+        $suggestDay = $d
         if (($ts.Count -ge 2) -and $median) {
             # reset ~1h after the typical start: early work rides the old
             # window's tail, the bulk of the session gets a fresh one
             $m = [Math]::Round(($median.TotalMinutes + 60) / 30) * 30
-            $m = $m % 1440
+            if ($m -ge 1440) {
+                # a start near midnight pushes the reset past 24:00 - the rule
+                # must carry to the NEXT weekday, or Get-FireSpecs anchors the
+                # window a full day early (fire ~23h before the user starts)
+                $m = $m - 1440
+                $suggestDay = $dayOrder[(([array]::IndexOf($dayOrder, $d) + 1) % 7)]
+            }
             $suggest = ([timespan]::FromMinutes($m)).ToString('hh\:mm')
         }
-        $days += , @{ day = $d; samples = $ts.Count; median = $median.ToString('hh\:mm'); suggest = $suggest }
+        $days += , @{ day = $d; samples = $ts.Count; median = $median.ToString('hh\:mm'); suggest = $suggest; suggestDay = $suggestDay }
     }
     # utilization, last 7 days: prompts under-count long agent runs, so each
     # window gets a 30-min grace past its last prompt - still an ESTIMATE
@@ -536,7 +545,7 @@ function Invoke-Learn {
     foreach ($d in $rep.days) {
         if (-not $d.suggest) { continue }
         if (-not $groups.Contains($d.suggest)) { $groups[$d.suggest] = @() }
-        $groups[$d.suggest] += $d.day
+        $groups[$d.suggest] += $d.suggestDay   # carries past midnight to the next weekday
     }
     if ($groups.Count -eq 0) {
         Write-Host ''

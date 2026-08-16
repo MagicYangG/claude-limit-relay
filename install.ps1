@@ -1,4 +1,4 @@
-# install.ps1 - idempotent setup for claude-limit-relay
+﻿# install.ps1 - idempotent setup for claude-limit-relay
 # Safe to re-run: skips steps that are already done.
 
 $ErrorActionPreference = 'Stop'

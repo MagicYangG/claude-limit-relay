@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 claude-limit-relay panel -- local web control panel (P4)
 
@@ -122,6 +122,7 @@ function Invoke-BackendCommand {
         $p = Start-Process -FilePath $Shell -ArgumentList $argStr -WorkingDirectory $Root `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
             -PassThru -NoNewWindow
+        $null = $p.Handle   # PS 5.1: without touching Handle first, ExitCode reads null forever
         if (-not $p.WaitForExit(120000)) {
             try { $p.Kill() } catch { }
             return @{ ExitCode = -1; StdOut = ''; StdErr = 'timeout after 120s' }

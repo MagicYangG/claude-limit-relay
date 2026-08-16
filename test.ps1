@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 claude-limit-relay self-test.
 
@@ -209,6 +209,19 @@ Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
         $a1 = (Get-Date).Date.AddDays(-3).AddHours(9)
         $rep = Get-LearnReport @($a1, $a1.AddHours(1)) (Get-Date)
         ($rep.days.Count -eq 1) -and ($null -eq $rep.days[0].suggest)
+    }
+    Test-Case 'a start near midnight carries the suggested reset to the NEXT weekday' {
+        # regression (review 2026-08-15): median 23:20 + 1h wraps to 00:30 but
+        # kept the same weekday, so the rule fired a full day early and the
+        # preheated window was ~23h dead before the user sat down
+        $a1 = (Get-Date).Date.AddDays(-10).AddHours(23).AddMinutes(20)
+        $a2 = $a1.AddDays(7)
+        $rep = Get-LearnReport @($a1, $a1.AddMinutes(30), $a2, $a2.AddMinutes(30)) (Get-Date)
+        $day = @($rep.days | Where-Object { $_.samples -eq 2 })
+        $expectNext = @('Mon','Tue','Wed','Thu','Fri','Sat','Sun')
+        $ix = [array]::IndexOf($expectNext, $a1.DayOfWeek.ToString().Substring(0,3))
+        ($day.Count -eq 1) -and ($day[0].suggest -eq '00:30') -and
+            ($day[0].suggestDay -eq $expectNext[(($ix + 1) % 7)])
     }
     Test-Case 'history parsing: epoch-ms lines in range count, old and junk lines do not' {
         $prev = $env:USERPROFILE
@@ -431,6 +444,21 @@ Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
     }
     Test-Case 'gate: transcript gone -> missing (relay cancelled, never fired blind)' {
         (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000005' @()) -eq 'missing'
+    }
+    Test-Case 'gate: unreadable tail (all sidechain) -> fire, never an unbounded skip' {
+        # regression (review 2026-08-15): mapping 'unknown' to a skip state
+        # parked the entry FOREVER - nothing counted against maxLegs, and a
+        # real ping fired every 10 min for good. Firing is bounded; skipping
+        # was not. 'unknown' must fire like 'stalled', per its own contract.
+        $lines = @()
+        foreach ($k in 1..30) { $lines += (Rec-Sidechain "drain $k" '2026-07-26T02:00:01.000Z') }
+        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000006' $lines) -eq 'fire'
+    }
+    Test-Case 'bash-path conversion escapes sh metachars ($ and backtick survive quoting)' {
+        # the tap path lands inside sh double quotes, which stop word-splitting
+        # but NOT $var/backtick expansion - C:\tools\$dev\tap.cjs must not
+        # expand to an empty segment and starve the downstream statusline
+        (ConvertTo-BashPath 'C:\tools\$dev\x.cjs') -eq '/c/tools/\$dev/x.cjs'
     }
 
     Write-Host '-- relay: ratelimit brake (cached resets_at may defer, never trigger) --'
@@ -792,6 +820,16 @@ Test-Case 'relay test rehearses the full chain in a sandbox and passes' {
     $out = & $childShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Repo 'relay.ps1') test 2>&1 | Out-String
     ($LASTEXITCODE -eq 0) -and ($out -match 'REHEARSAL PASS')
 }
+Test-Case 'the rehearsal ALSO passes under Windows PowerShell 5.1 (declared minimum)' {
+    # regression (review 2026-08-15): the pwsh-preferred child kept a fully
+    # broken 5.1 green - on 5.1, Start-Process -PassThru leaves ExitCode null
+    # unless .Handle is touched, and a BOM-less file mangles $LimitRx into an
+    # invalid regex under the ANSI codepage. Both are fixed; this proves it.
+    $winPs = Get-Command powershell -ErrorAction SilentlyContinue
+    if (-not $winPs) { Write-Host '    (powershell 5.1 not found - skipped)'; return $true }
+    $out = & $winPs.Source -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Repo 'relay.ps1') test 2>&1 | Out-String
+    ($LASTEXITCODE -eq 0) -and ($out -match 'REHEARSAL PASS')
+}
 Test-Case 'the rehearsal never touches the real scheduler or armed dir' {
     $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
     # the sandbox redirect and the scheduler stubs must both be present
@@ -898,6 +936,45 @@ Test-Case 'claude spawns are armored against the child-session marker' {
     ($relay -match 'Remove-Item Env:CLAUDE_CODE_CHILD_SESSION') -and
         ($panel -match 'Remove-Item Env:CLAUDE_CODE_CHILD_SESSION') -and
         (([regex]::Matches($relay, 'CLAUDE_CODE_FORCE_SESSION_PERSISTENCE')).Count -ge 3)
+}
+Test-Case 'every shipped script carries a UTF-8 BOM (5.1 decodes BOM-less as ANSI)' {
+    # without the BOM, Windows PowerShell 5.1 reads these files through the
+    # legacy codepage: on cp936 the middle-dot chars in comments/corpus turn
+    # to mojibake, and a bare [] class once became an invalid regex
+    $ok = $true
+    foreach ($f in @('preheat.ps1', 'relay.ps1', 'panel.ps1', 'install.ps1', 'test.ps1')) {
+        $b = [System.IO.File]::ReadAllBytes((Join-Path $Repo $f))
+        if (-not ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) { $ok = $false }
+    }
+    $ok
+}
+Test-Case 'the $LimitRx source line is pure ASCII (locale-proof even without a BOM)' {
+    $line = (Get-Content (Join-Path $Repo 'relay.ps1') -Encoding UTF8 | Where-Object { $_ -match '^\$LimitRx' } | Select-Object -First 1)
+    $ascii = $true
+    foreach ($ch in $line.ToCharArray()) { if ([int]$ch -gt 127) { $ascii = $false } }
+    ($line.Length -gt 0) -and $ascii -and ($line -like '*u00B7*') -and ($line -like '*u2219*')
+}
+Test-Case 'every ExitCode-reading Start-Process touches .Handle first (PS 5.1 null trap)' {
+    # 5.1 returns a process object whose ExitCode stays null forever unless
+    # .Handle was read before the process exits - every ping/leg/backend
+    # spawn whose ExitCode we judge must carry the touch
+    $ok = $true
+    foreach ($f in @('relay.ps1', 'preheat.ps1', 'panel.ps1')) {
+        $c = Get-Content (Join-Path $Repo $f) -Raw -Encoding UTF8
+        $spawns = ([regex]::Matches($c, '-PassThru -NoNewWindow')).Count
+        $touches = ([regex]::Matches($c, '\$null = \$p\.Handle')).Count
+        if ($touches -lt 1) { $ok = $false }
+        if ($f -eq 'relay.ps1' -and $touches -lt 2) { $ok = $false }   # ping + leg
+    }
+    $ok
+}
+Test-Case 'statusline on/off consult BOTH settings files and the sidecar path' {
+    # regression (review 2026-08-15): off re-derived "the file with a
+    # statusLine, local first" and went no-op when the tap sat in the other
+    # file; on could then double-wrap and clobber the sidecar
+    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
+    ($r -match '\$candFiles') -and ($r -match '\$tapFile') -and
+        ($r -match 'sc\.file') -and ($r -match 'already installed \(in')
 }
 Test-Case 'every script parses' {
     $ok = $true

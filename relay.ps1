@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 claude-relay -- resume interrupted work when the Max 5h usage limit resets (P2)
 Multi-relay: any number of sessions can be armed at once (one file per session
@@ -102,14 +102,18 @@ $TaskName  = 'ClaudeRelay-Probe'
 #   "Weekly|Opus weekly|5-hour limit reached <../-> resets ..."               (older CLI)
 #   "Claude AI usage limit reached|<epoch>"                    (legacy, lives in old transcripts)
 #   "You're out of extra usage ..." / "Out of usage credits"   (usage-credit exhaustion)
-# 'limit [·∙] resets' is the future-proof net: any "<model> limit · resets" matches
+# 'limit [\u00B7\u2219] resets' is the future-proof net: any "<model> limit · resets" matches
 # without hard-coding model names (reset part may be a weekday/date with NO digit).
 # Deliberately NOT matched:
 #   "...(not your usage limit)"            transient server throttle - lookbehind-excluded
 #   "Approaching weekly limit"             non-blocking warning     - lookbehind-excluded
 #   "would exceed your account's rate limit"  transient 429: the failure-rearm path retries it
 #   "Usage credits required for 1M context"   entitlement gate, not quota - matches nothing here
-$LimitRx   = '(?<!not your )usage limit|session limit|(?<!approaching )weekly limit|limit reached|limit [·∙] resets|resets? at|resets? \d|out of extra usage|out of .{0,20}credits'
+# the middle-dot separators are spelled · / ∙ in ASCII on purpose:
+# under Windows PowerShell 5.1 a BOM-less file decodes via the ANSI codepage,
+# and on cp936 the raw bytes of the literal chars ate the closing ']' - every
+# -match against this pattern then threw "unterminated [] set" on ANY input
+$LimitRx   = '(?<!not your )usage limit|session limit|(?<!approaching )weekly limit|limit reached|limit [\u00B7\u2219] resets|resets? at|resets? \d|out of extra usage|out of .{0,20}credits'
 $DefaultPrompt = 'Continue the unfinished task from the previous instructions in this conversation and work it to FULL completion: if a background process, test or download is still running, wait for it and report its result - do not stop while anything is pending. If everything was already completed, reply exactly DONE.'
 $WatchIdleMinutes = 45
 $LegTimeoutMs     = 14400000   # 4h per resumed leg
@@ -478,12 +482,17 @@ function Resolve-FireGate($e) {
     # since: the returning human, a finished leg whose bookkeeping crashed, or
     # the CLI's own limit-picker auto-continue in the original window.
     #   fire     -> tail is still the kill record (all-clear), or the task was
-    #               cut off mid-flight and is idle (the watch-stall path)
+    #               cut off mid-flight and is idle (the watch-stall path), or
+    #               the tail is UNREADABLE ('unknown' = treated as stalled,
+    #               same as everywhere else). Firing on unknown is deliberate:
+    #               a fired leg is bounded by maxLegs, while refusing to fire
+    #               retries forever with nothing ever counting against the
+    #               budget (an all-sidechain tail or a >256KB tool_result at
+    #               the end would have parked an armed entry for good).
     #   yield    -> a real turn landed minutes ago: someone is driving
     #   finished -> ends with a completed reply that is NOT the kill: it was
     #               finished without us - never fire into it
     #   missing  -> transcript is gone (cleaned up?): nothing left to resume
-    #   skip     -> transcript unreadable right now: fail safe, retry next tick
     $sf = Get-SessionFileById $e.session
     if (-not $sf) { return 'missing' }
     $sty = Get-SessionTailState $sf.FullName
@@ -491,8 +500,7 @@ function Resolve-FireGate($e) {
     $acty = Get-TranscriptActivity $sf.FullName
     if ($acty -and (((Get-Date) - $acty).TotalMinutes -lt 10)) { return 'yield' }
     if ($sty -eq 'finished') { return 'finished' }
-    if ($sty -eq 'stalled') { return 'fire' }
-    'skip'
+    'fire'
 }
 
 # ---------- armed-entry state layer (one file per session) ----------
@@ -574,6 +582,7 @@ function Invoke-ClaudePing {
         $pingArgs = '-p "hi" --model haiku --no-session-persistence --strict-mcp-config --mcp-config "{0}" --output-format json' -f $EmptyMcp
         $p = Start-Process -FilePath $claude -ArgumentList $pingArgs -WorkingDirectory $FirePit `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru -NoNewWindow
+        $null = $p.Handle   # PS 5.1: without touching Handle first, ExitCode reads null forever
         if (-not $p.WaitForExit(240000)) { try { $p.Kill() } catch { }; return 'error' }
         $stdout = ''; if (Test-Path $outFile) { $stdout = Get-Content $outFile -Raw }
         $stderrTxt = ''; if (Test-Path $errFile) { $stderrTxt = Get-Content $errFile -Raw }
@@ -692,6 +701,7 @@ function Start-ResumeLeg($e) {
     $p = Start-Process -FilePath $claude -ArgumentList $rArgs -WorkingDirectory $workDir `
         -RedirectStandardInput $pf -RedirectStandardOutput $rawFile -RedirectStandardError $errFile `
         -PassThru -NoNewWindow
+    $null = $p.Handle   # PS 5.1: without touching Handle first, ExitCode reads null forever
     @{ pid = $p.Id; leg = $e.legs; startedAt = (Get-Date).ToString('s'); out = $rawFile } |
         ConvertTo-Json -Compress | Set-Content -Path (Join-Path $ArmedDir ($e.session + '.lock.json')) -Encoding UTF8
     @{ entry = $e; proc = $p; raw = $rawFile; err = $errFile; out = $outFile; started = Get-Date; preAct = $preAct }
@@ -958,10 +968,6 @@ function Invoke-Probe {
             Send-Toast ('{0}: transcript disappeared - relay cancelled' -f $e.session.Substring(0, 8))
             continue
         }
-        if ($gate -eq 'skip') {
-            Write-Log @{ ev = 'fire-skip'; session = $e.session; reason = 'transcript-unreadable' }
-            continue
-        }
         $e.legs = [int]$e.legs + 1   # count BEFORE launching: crash cannot loop forever
         Save-Entry $e
         $records += , (Start-ResumeLeg $e)
@@ -1187,10 +1193,12 @@ function Invoke-Takeover {
 }
 
 function ConvertTo-BashPath([string]$p) {
-    # statusLine commands run under sh: C:\x\y -> /c/x/y
+    # statusLine commands run under sh: C:\x\y -> /c/x/y. The result gets
+    # embedded inside double quotes, which stop word-splitting but NOT $ or
+    # backtick expansion - escape those so a path like C:\tools\$dev survives
     $x = $p -replace '\\', '/'
     if ($x -match '^([A-Za-z]):(.*)$') { $x = '/' + $Matches[1].ToLower() + $Matches[2] }
-    $x
+    $x -replace '([$"`\\])', '\$1'
 }
 
 function Invoke-StatusLineSetup {
@@ -1206,33 +1214,48 @@ function Invoke-StatusLineSetup {
     $tap = Join-Path $Root 'statusline-tap.cjs'
     $sidecar = Join-Path $Root 'statusline-original.json'
     $claudeDir = Join-Path $env:USERPROFILE '.claude'
-    # settings.local.json wins over settings.json in Claude Code - edit
-    # whichever currently carries the statusLine, preferring local
-    $sFile = $null
-    foreach ($cand in @((Join-Path $claudeDir 'settings.local.json'), (Join-Path $claudeDir 'settings.json'))) {
-        if (Test-Path $cand) {
-            try {
-                $j = Get-Content $cand -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($j.PSObject.Properties['statusLine'] -and $j.statusLine) { $sFile = $cand; break }
-            } catch { }
-        }
+    $candFiles = @((Join-Path $claudeDir 'settings.local.json'), (Join-Path $claudeDir 'settings.json'))
+    $readCmd = {
+        param($path)
+        if (-not (Test-Path $path)) { return $null }
+        try {
+            $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.PSObject.Properties['statusLine'] -and $j.statusLine -and $j.statusLine.PSObject.Properties['command']) {
+                return [string]$j.statusLine.command
+            }
+        } catch { }
+        $null
     }
-    if (-not $sFile) { $sFile = Join-Path $claudeDir 'settings.local.json' }
-
-    $json = $null
-    if (Test-Path $sFile) {
-        try { $json = Get-Content $sFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
-            Write-Host ('cannot parse {0} - fix it first, nothing was changed' -f $sFile); return
-        }
-    }
-    if (-not $json) { $json = [pscustomobject]@{} }
-    $oldCmd = $null
-    if ($json.PSObject.Properties['statusLine'] -and $json.statusLine -and $json.statusLine.PSObject.Properties['command']) {
-        $oldCmd = [string]$json.statusLine.command
+    # the tap may live in EITHER settings file (whichever had the statusLine
+    # when it was installed) - both on and off must look at both, or an off
+    # after the other file gained a statusLine becomes a silent no-op while
+    # the wrapped file stays wired (found by review 2026-08-15)
+    $tapFile = $null
+    foreach ($cand in $candFiles) {
+        $c = & $readCmd $cand
+        if ($c -and ($c -like '*statusline-tap.cjs*')) { $tapFile = $cand; break }
     }
 
     if ($onOff -eq 'off') {
-        if (-not $oldCmd -or ($oldCmd -notlike '*statusline-tap.cjs*')) { Write-Host 'statusline tap is not installed - nothing to do'; return }
+        $sFile = $null
+        if (Test-Path $sidecar) {
+            # the sidecar remembers exactly which file was wrapped - trust it
+            # as long as that file still carries the tap
+            try {
+                $sc = Get-Content $sidecar -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($sc.PSObject.Properties['file'] -and $sc.file) {
+                    $c = & $readCmd ([string]$sc.file)
+                    if ($c -and ($c -like '*statusline-tap.cjs*')) { $sFile = [string]$sc.file }
+                }
+            } catch { }
+        }
+        if (-not $sFile) { $sFile = $tapFile }
+        if (-not $sFile) { Write-Host 'statusline tap is not installed - nothing to do'; return }
+        $json = $null
+        try { $json = Get-Content $sFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
+            Write-Host ('cannot parse {0} - fix it first, nothing was changed' -f $sFile); return
+        }
+        $oldCmd = [string]$json.statusLine.command
         $restore = $null
         if (Test-Path $sidecar) {
             try { $restore = Get-Content $sidecar -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
@@ -1252,7 +1275,22 @@ function Invoke-StatusLineSetup {
     }
 
     # --- on ---
-    if ($oldCmd -like '*statusline-tap.cjs*') { Write-Host 'statusline tap is already installed'; return }
+    if ($tapFile) { Write-Host ('statusline tap is already installed (in {0})' -f $tapFile); return }
+    # target: whichever file currently carries a statusLine, local preferred;
+    # neither -> settings.local.json gets a solo tap
+    $sFile = $null
+    foreach ($cand in $candFiles) {
+        if (& $readCmd $cand) { $sFile = $cand; break }
+    }
+    if (-not $sFile) { $sFile = $candFiles[0] }
+    $json = $null
+    if (Test-Path $sFile) {
+        try { $json = Get-Content $sFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
+            Write-Host ('cannot parse {0} - fix it first, nothing was changed' -f $sFile); return
+        }
+    }
+    if (-not $json) { $json = [pscustomobject]@{} }
+    $oldCmd = & $readCmd $sFile
     # reuse the node the user's own command already points at (the statusline
     # environment may not have node on PATH); fall back to PATH lookup
     $node = 'node'
