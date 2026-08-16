@@ -53,6 +53,7 @@ preheat status        # 本机活动 + 排定任务 + 最近记录
 preheat reset 20:00   # 一次性：让窗口在 20:00 重置（自动 15:00 预热）
 preheat at 15:00      # 一次性：15:00 预热
 preheat +2h           # 一次性：2 小时后预热
+preheat learn         # 按最近 30 天作息给出排期建议 + 窗口利用率报告（learn auto 一键写入并生效）
 preheat off           # 移除全部预热任务
 ```
 
@@ -75,6 +76,9 @@ relay arm -Prompt "先把测试跑完再收尾"       # 自定义续跑提示词
 relay status                              # 队列状态 / 探测任务 / 最近记录
 relay legs a3f8 5                         # 不取消排布，直接把接力上限改成 5
 relay disarm                              # 取消排布（会击杀在途续跑进程）
+relay doctor                              # 体检：CLI / 计划任务 / 唤醒标志 / 面板，逐项检查前置条件
+relay test                                # 沙箱彩排全链路（mock claude，零额度，约 1 分钟）
+relay statusline on                       # 透传接入 statusline，拿到精确重置时刻（off 还原）
 ```
 
 任务能横跨几个窗口：自己干的第 1 个 + 默认 3 个 = 最多 4 个窗口（约 20 小时），`-MaxLegs N` 可调（排上之后用 `relay legs` 或面板下拉框随时改），但要注意周限。

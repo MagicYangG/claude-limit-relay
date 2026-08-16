@@ -53,6 +53,7 @@ preheat status        # ローカル活動 + 登録タスク + 直近ログ
 preheat reset 20:00   # 単発: ウィンドウを 20:00 にリセットさせる(15:00 に自動予熱)
 preheat at 15:00      # 単発: 15:00 に予熱
 preheat +2h           # 単発: 2 時間後に予熱
+preheat learn         # 直近30日のリズムから予熱時刻を提案 + 窓利用率レポート(learn auto で書き込み+適用)
 preheat off           # 予熱タスクを全削除
 ```
 
@@ -75,6 +76,9 @@ relay arm -Prompt "テストを通してから締めて"   # 継続プロンプ�
 relay status                                  # キュー状態 / プローブタスク / 直近ログ
 relay legs a3f8 5                             # 登録を保ったまま中継上限を 5 に変更
 relay disarm                                  # 登録解除(進行中の再開プロセスも停止)
+relay doctor                                  # 前提チェック: CLI / タスク / 復帰フラグ / パネル
+relay test                                    # サンドボックスで全チェーンをリハーサル(モック claude、クォータ消費ゼロ)
+relay statusline on                           # statusline を透過タップして正確なリセット時刻を取得(off で復元)
 ```
 
 タスクがまたげるウィンドウ数: 自分で使った 1 つ + デフォルト 3 = 最大 4 ウィンドウ(約 20 時間)。`-MaxLegs N` で調整できます(登録後も `relay legs` かパネルで変更可)。週次上限には注意。

@@ -53,6 +53,7 @@ preheat status        # local activity + registered tasks + recent journal
 preheat reset 20:00   # one-shot: make the window reset at 20:00 (fires at 15:00)
 preheat at 15:00      # one-shot: fire at 15:00
 preheat +2h           # one-shot: fire 2 hours from now
+preheat learn         # schedule suggestions from your last 30 days + window-utilization report (learn auto applies)
 preheat off           # remove all preheat tasks
 ```
 
@@ -75,6 +76,9 @@ relay arm -Prompt "finish the tests before wrapping up"   # custom continuation 
 relay status                              # queue state / probe task / recent events
 relay legs a3f8 5                         # change a session's leg budget in place, no re-arm
 relay disarm                              # cancel (kills any in-flight resume)
+relay doctor                              # check-up: CLI, scheduled tasks, wake flags, panel - every precondition
+relay test                                # sandboxed full-chain rehearsal (mock claude, zero quota, ~1 min)
+relay statusline on                       # tap the statusline for exact reset times (off restores)
 ```
 
 How many windows one task can span: the one you worked in + 3 legs by default = up to 4 windows (about 20 hours). Tune with `-MaxLegs N` (or `relay legs` / the panel dropdown at any time) — mind the weekly cap.

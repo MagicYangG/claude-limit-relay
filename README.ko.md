@@ -53,6 +53,7 @@ preheat status        # 로컬 활동 + 등록 작업 + 최근 로그
 preheat reset 20:00   # 일회성: 윈도우를 20:00에 리셋(15:00 자동 예열)
 preheat at 15:00      # 일회성: 15:00에 예열
 preheat +2h           # 일회성: 2시간 후 예열
+preheat learn         # 최근 30일 리듬으로 예열 시각 제안 + 윈도우 활용률 리포트(learn auto = 기록+적용)
 preheat off           # 예열 작업 전체 제거
 ```
 
@@ -75,6 +76,9 @@ relay arm -Prompt "테스트 끝내고 마무리해"   # 계속 프롬프트 지
 relay status                                # 큐 상태 / 프로브 작업 / 최근 로그
 relay legs a3f8 5                           # 등록 유지한 채 릴레이 상한을 5로 변경
 relay disarm                                # 등록 해제(진행 중인 재개 프로세스 종료)
+relay doctor                                # 사전 조건 점검: CLI / 작업 / 절전 해제 플래그 / 패널
+relay test                                  # 샌드박스 전체 체인 리허설(mock claude, 쿼터 소모 없음)
+relay statusline on                         # statusline 투명 탭으로 정확한 리셋 시각 확보(off = 복원)
 ```
 
 작업이 걸칠 수 있는 윈도우 수: 직접 쓴 1개 + 기본 3개 = 최대 4개(약 20시간). `-MaxLegs N` 으로 조절할 수 있습니다(등록 후에도 `relay legs` 나 패널에서 변경 가능). 주간 한도에 주의하세요.
