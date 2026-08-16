@@ -25,6 +25,9 @@ Commands:
                           scheduled tasks + wake flags, panel, journals
   test                    Full-chain rehearsal in a sandbox with a mock claude:
                           detect -> gate -> leg -> verify -> done, zero quota
+  statusline on|off       Wire statusline-tap.cjs into the statusLine (pure
+                          passthrough) so exact 5h/weekly reset times land in
+                          state-ratelimits.json and probes can time themselves
 
 Design: at limit-exhaustion every Claude surface is dead, so this script is
 pure PowerShell until a probe ping passes. Rejected pings consume nothing.
@@ -187,6 +190,52 @@ function Get-Proxy {
         } catch { }
     }
     $null
+}
+
+# ---------- cached rate limits (written by statusline-tap.cjs) ----------
+
+function Get-CachedRateLimits {
+    $p = Join-Path $Root 'state-ratelimits.json'
+    if (-not (Test-Path $p)) { return $null }
+    try { Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $null }
+}
+
+function ConvertTo-LocalTime($v) {
+    # resets_at arrives as epoch seconds, epoch millis or an ISO string
+    # depending on CLI version - accept all three, return $null on garbage
+    if ($null -eq $v) { return $null }
+    try {
+        if (($v -is [double]) -or ($v -is [long]) -or ($v -is [int]) -or (([string]$v) -match '^\d+$')) {
+            $n = [double]$v
+            if ($n -gt 1e12) { $n = $n / 1000 }
+            return [DateTimeOffset]::FromUnixTimeSeconds([long]$n).LocalDateTime
+        }
+        return ([datetimeoffset]::Parse([string]$v)).LocalDateTime
+    } catch { return $null }
+}
+
+function Get-ResetBrakeUntil($rl, $now) {
+    # The cached resets_at only ever acts as a BRAKE (defer probing to the
+    # moment the window actually reopens); the probe stays the trigger
+    # authority - a resume happens only after a real ping passes. Rules:
+    #   - trusted only while the 5h bucket reads effectively exhausted (>=99%)
+    #   - a resets_at in the past, unparseable, or absent -> no brake
+    #   - capped at now+2h: a garbage timestamp can cost one bounded wait,
+    #     never a deadlock (probing resumes at the cap regardless)
+    if (-not $rl -or -not $rl.PSObject.Properties['rate_limits'] -or -not $rl.rate_limits) { return $null }
+    if (-not $rl.rate_limits.PSObject.Properties['five_hour'] -or -not $rl.rate_limits.five_hour) { return $null }
+    $fh = $rl.rate_limits.five_hour
+    $pct = $null
+    foreach ($k in @('utilization', 'used_percentage')) {
+        if ($fh.PSObject.Properties[$k] -and $null -ne $fh.$k) { $pct = [double]$fh.$k; break }
+    }
+    if (($null -eq $pct) -or ($pct -lt 99)) { return $null }
+    $reset = $null
+    if ($fh.PSObject.Properties['resets_at']) { $reset = ConvertTo-LocalTime $fh.resets_at }
+    if (-not $reset -or ($reset -le $now)) { return $null }
+    $cap = $now.AddHours(2)
+    if ($reset -gt $cap) { return $cap }
+    $reset
 }
 
 # ---------- session transcript helpers ----------
@@ -790,7 +839,18 @@ function Invoke-Probe {
         if ($m -ne 'watch' -and $m -ne 'parked') { $needPing = $true; break }
     }
     $ping = 'skip'
-    if ($needPing) { $ping = Invoke-ClaudePing }
+    $brakeUntil = $null
+    if ($needPing) {
+        # ratelimit brake: when the statusline tap has cached "5h bucket
+        # exhausted, resets at T", a ping before T cannot succeed - defer the
+        # next tick to just past T instead of grinding the 10-min grid. Bonus:
+        # the resume lands ~2 min after the reset instead of up to a full grid
+        # step late. The probe stays the trigger authority (Get-ResetBrakeUntil
+        # enforces the trust rules and the 2h cap).
+        $brakeUntil = Get-ResetBrakeUntil (Get-CachedRateLimits) (Get-Date)
+        if ($brakeUntil -and (($brakeUntil - (Get-Date)).TotalMinutes -gt 2)) { $ping = 'brake' }
+        else { $ping = Invoke-ClaudePing }
+    }
     $ready = @()
 
     foreach ($e in $entries) {
@@ -853,8 +913,18 @@ function Invoke-Probe {
     }
 
     if ($ping -ne 'open' -or -not $ready) {
-        Write-Log @{ ev = 'probe'; ping = $ping; armed = @(Get-ArmedAll).Count }
-        if (@(Get-ArmedAll).Count -gt 0) { Register-ProbeTask -DelayMinutes 10 }   # renew horizon, keep 10-min period
+        $probeEntry = @{ ev = 'probe'; ping = $ping; armed = @(Get-ArmedAll).Count }
+        $delay = 10   # renew horizon, keep the 10-min period
+        if (($ping -eq 'brake') -and $brakeUntil) {
+            # sleep straight through to the known reset (watch checks pause
+            # too - harmless: an exhausted account moves nothing meanwhile)
+            $probeEntry.until = $brakeUntil.ToString('s')
+            $delay = [int][Math]::Ceiling(($brakeUntil - (Get-Date)).TotalMinutes) + 2
+            if ($delay -lt 2) { $delay = 2 }
+            if ($delay -gt 125) { $delay = 125 }
+        }
+        Write-Log $probeEntry
+        if (@(Get-ArmedAll).Count -gt 0) { Register-ProbeTask -DelayMinutes $delay }
         else { Unregister-ProbeTask }
         return
     }
@@ -1116,6 +1186,103 @@ function Invoke-Takeover {
     Open-TakeoverTab $pickd.session $pickd.cwd
 }
 
+function ConvertTo-BashPath([string]$p) {
+    # statusLine commands run under sh: C:\x\y -> /c/x/y
+    $x = $p -replace '\\', '/'
+    if ($x -match '^([A-Za-z]):(.*)$') { $x = '/' + $Matches[1].ToLower() + $Matches[2] }
+    $x
+}
+
+function Invoke-StatusLineSetup {
+    # Wire statusline-tap.cjs into the user's statusLine (or remove it again).
+    # The tap is a pure pipe stage - stdin reaches the original command
+    # byte-identical - so wrapping is safe for ANY existing command:
+    #   "<node>" "<tap>" | ( <original command> )
+    # With no statusLine configured at all, the tap runs --solo and renders a
+    # minimal usage line itself. Original settings are backed up AND kept in a
+    # sidecar so 'off' restores them exactly.
+    $onOff = $Arg
+    if ($onOff -notin @('on', 'off')) { Write-Host 'usage: relay statusline on | off'; return }
+    $tap = Join-Path $Root 'statusline-tap.cjs'
+    $sidecar = Join-Path $Root 'statusline-original.json'
+    $claudeDir = Join-Path $env:USERPROFILE '.claude'
+    # settings.local.json wins over settings.json in Claude Code - edit
+    # whichever currently carries the statusLine, preferring local
+    $sFile = $null
+    foreach ($cand in @((Join-Path $claudeDir 'settings.local.json'), (Join-Path $claudeDir 'settings.json'))) {
+        if (Test-Path $cand) {
+            try {
+                $j = Get-Content $cand -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($j.PSObject.Properties['statusLine'] -and $j.statusLine) { $sFile = $cand; break }
+            } catch { }
+        }
+    }
+    if (-not $sFile) { $sFile = Join-Path $claudeDir 'settings.local.json' }
+
+    $json = $null
+    if (Test-Path $sFile) {
+        try { $json = Get-Content $sFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
+            Write-Host ('cannot parse {0} - fix it first, nothing was changed' -f $sFile); return
+        }
+    }
+    if (-not $json) { $json = [pscustomobject]@{} }
+    $oldCmd = $null
+    if ($json.PSObject.Properties['statusLine'] -and $json.statusLine -and $json.statusLine.PSObject.Properties['command']) {
+        $oldCmd = [string]$json.statusLine.command
+    }
+
+    if ($onOff -eq 'off') {
+        if (-not $oldCmd -or ($oldCmd -notlike '*statusline-tap.cjs*')) { Write-Host 'statusline tap is not installed - nothing to do'; return }
+        $restore = $null
+        if (Test-Path $sidecar) {
+            try { $restore = Get-Content $sidecar -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+        }
+        if (Test-Path $sFile) { Copy-Item $sFile ($sFile + '.bak-' + (Get-Date).ToString('yyyyMMdd-HHmmss')) -Force }
+        if ($restore -and $restore.PSObject.Properties['command'] -and $restore.command) {
+            $json.statusLine.command = [string]$restore.command
+        } elseif ($oldCmd -match '^"[^"]+" "[^"]*statusline-tap\.cjs" \| \( (.*) \)$') {
+            $json.statusLine.command = $Matches[1]   # sidecar lost: unwrap
+        } else {
+            $json.PSObject.Properties.Remove('statusLine')   # tap was solo: statusLine did not exist before
+        }
+        ConvertTo-Json -InputObject $json -Depth 20 | Set-Content -Path $sFile -Encoding UTF8
+        Remove-Item $sidecar -ErrorAction SilentlyContinue
+        Write-Host ('statusline tap removed from {0} (backup written)' -f $sFile)
+        return
+    }
+
+    # --- on ---
+    if ($oldCmd -like '*statusline-tap.cjs*') { Write-Host 'statusline tap is already installed'; return }
+    # reuse the node the user's own command already points at (the statusline
+    # environment may not have node on PATH); fall back to PATH lookup
+    $node = 'node'
+    if ($oldCmd -and ($oldCmd -match '"([^"]*node(\.exe)?)"')) { $node = $Matches[1] }
+    elseif (Get-Command node -ErrorAction SilentlyContinue) { $node = ConvertTo-BashPath (Get-Command node).Source }
+    $tapBash = ConvertTo-BashPath $tap
+    if ($oldCmd) {
+        $newCmd = ('"{0}" "{1}" | ( {2} )' -f $node, $tapBash, $oldCmd)
+    } else {
+        $newCmd = ('"{0}" "{1}" --solo' -f $node, $tapBash)
+    }
+    if (Test-Path $sFile) {
+        $probe = Get-Content $sFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        if ($probe) { Copy-Item $sFile ($sFile + '.bak-' + (Get-Date).ToString('yyyyMMdd-HHmmss')) -Force }
+    }
+    @{ file = $sFile; command = $oldCmd } | ConvertTo-Json | Set-Content -Path $sidecar -Encoding UTF8
+    if ($json.PSObject.Properties['statusLine'] -and $json.statusLine) {
+        $json.statusLine | Add-Member -NotePropertyName command -NotePropertyValue $newCmd -Force
+        if (-not ($json.statusLine.PSObject.Properties['type'])) {
+            $json.statusLine | Add-Member -NotePropertyName type -NotePropertyValue 'command' -Force
+        }
+    } else {
+        $json | Add-Member -NotePropertyName statusLine -NotePropertyValue ([pscustomobject]@{ type = 'command'; command = $newCmd }) -Force
+    }
+    ConvertTo-Json -InputObject $json -Depth 20 | Set-Content -Path $sFile -Encoding UTF8
+    Write-Host ('statusline tap installed in {0} (backup + sidecar written)' -f $sFile)
+    Write-Host 'takes effect on the next statusline render; rate limits land in state-ratelimits.json'
+    Write-Host 'undo anytime: relay statusline off'
+}
+
 function Write-Check([bool]$ok, [string]$name, [string]$detail = '', [switch]$WarnOnly, [string]$Hint = '') {
     # detail rides along always (informational); Hint is remediation advice
     # and only appears when the check did NOT pass
@@ -1339,5 +1506,6 @@ switch -Regex ($Command) {
     '^sessions$' { Invoke-Sessions; break }
     '^doctor$'   { Invoke-Doctor; break }
     '^test$'     { Invoke-Rehearsal; break }
-    default      { Write-Host 'usage: relay arm [sessionIdPrefix] [-Watch] [-Prompt "..."] [-MaxLegs N] | disarm [prefix] | legs <prefix> <1-9> | status [-Json] | takeover [prefix] | sessions | doctor | test | probe' }
+    '^statusline$' { Invoke-StatusLineSetup; break }
+    default      { Write-Host 'usage: relay arm [sessionIdPrefix] [-Watch] [-Prompt "..."] [-MaxLegs N] | disarm [prefix] | legs <prefix> <1-9> | status [-Json] | takeover [prefix] | sessions | doctor | test | statusline on|off | probe' }
 }

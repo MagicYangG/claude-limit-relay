@@ -5,6 +5,8 @@ relay-*.log
 relay-raw-*.json
 panel-log*
 state.json
+state-ratelimits.json
+statusline-original.json
 armed/
 done/
 firepit/

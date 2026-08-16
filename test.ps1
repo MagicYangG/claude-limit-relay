@@ -392,6 +392,52 @@ Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
         (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000005' @()) -eq 'missing'
     }
 
+    Write-Host '-- relay: ratelimit brake (cached resets_at may defer, never trigger) --'
+    Test-Case 'resets_at accepts epoch seconds, epoch millis and ISO; garbage -> null' {
+        $a = ConvertTo-LocalTime 1786849200
+        $b = ConvertTo-LocalTime 1786849200000
+        $c = ConvertTo-LocalTime '2026-08-15T23:30:00+08:00'
+        $d = ConvertTo-LocalTime 'soon'
+        ($a -and $a.Year -eq 2026) -and ($b -eq $a) -and ($c -and $c.Year -eq 2026) -and ($null -eq $d)
+    }
+    Test-Case 'brake: exhausted bucket + near reset -> defer to that reset' {
+        $now = Get-Date
+        $rl = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
+            utilization = 99.5; resets_at = $now.AddMinutes(40).ToUniversalTime().ToString('o') } } }
+        $b = Get-ResetBrakeUntil $rl $now
+        $b -and ([Math]::Abs(($b - $now.AddMinutes(40)).TotalMinutes) -lt 1)
+    }
+    Test-Case 'brake: the live-observed payload shape works (used_percentage + epoch)' {
+        # captured live 2026-08-15: {"used_percentage":64,"resets_at":1786849200}
+        $now = Get-Date
+        $epoch = [DateTimeOffset]::new($now.AddMinutes(30)).ToUnixTimeSeconds()
+        $rl = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
+            used_percentage = 100; resets_at = $epoch } } }
+        $b = Get-ResetBrakeUntil $rl $now
+        $b -and ([Math]::Abs(($b - $now.AddMinutes(30)).TotalMinutes) -lt 1)
+    }
+    Test-Case 'brake: capped at now+2h - garbage can cost one bounded wait, never a deadlock' {
+        $now = Get-Date
+        $rl = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
+            utilization = 100; resets_at = $now.AddHours(7).ToUniversalTime().ToString('o') } } }
+        $b = Get-ResetBrakeUntil $rl $now
+        $b -and ([Math]::Abs(($b - $now.AddHours(2)).TotalMinutes) -lt 1)
+    }
+    Test-Case 'brake: a bucket that is not exhausted never brakes' {
+        $now = Get-Date
+        $rl = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
+            used_percentage = 64; resets_at = $now.AddMinutes(40).ToUniversalTime().ToString('o') } } }
+        $null -eq (Get-ResetBrakeUntil $rl $now)
+    }
+    Test-Case 'brake: a reset already in the past, or missing data, never brakes' {
+        $now = Get-Date
+        $past = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
+            utilization = 100; resets_at = $now.AddMinutes(-5).ToUniversalTime().ToString('o') } } }
+        ($null -eq (Get-ResetBrakeUntil $past $now)) -and
+            ($null -eq (Get-ResetBrakeUntil $null $now)) -and
+            ($null -eq (Get-ResetBrakeUntil ([pscustomobject]@{ rate_limits = $null }) $now))
+    }
+
     Write-Host '-- relay: limit detection is CLI-phrase only --'
     Test-Case 'real CLI limit phrases match (corpus web-verified 2026-08-04)' {
         $ok = $true
@@ -632,6 +678,10 @@ try {
     Test-Case 'POST /api/relay/legs with a count outside 1-9 -> 400' {
         (Invoke-PanelPost '/api/relay/legs' '{"session":"11111111-2222-3333-4444-555555555555","maxLegs":99}' @{ Origin = "http://localhost:$panelPort" } 'application/json').Code -eq 400
     }
+    Test-Case 'GET /api/ratelimits answers a JSON object' {
+        $raw = (Invoke-WebRequest -Uri "$base/api/ratelimits" -UseBasicParsing -TimeoutSec 15).Content
+        $raw.TrimStart().StartsWith('{')
+    }
     Test-Case 'POST /api/preheat/once rejects a hostile value server-side -> 400' {
         # the once endpoint used to trust the body value all the way into the
         # backend command line; a value like  1h\" -Command off  spliced argv
@@ -644,6 +694,38 @@ try {
     }
 } finally {
     if ($panelProc) { try { Stop-Process -Id $panelProc.Id -Force -ErrorAction SilentlyContinue } catch { } }
+}
+
+# -------------------------------------------------- statusline tap (node)
+Write-Host ''
+Write-Host '-- statusline tap --'
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+Test-Case 'tap forwards stdin byte-identical and caches rate_limits beside itself' {
+    if (-not $nodeCmd) { Write-Host '    (node not on PATH - skipped)'; return $true }
+    $td = Join-Path $Tmp 'tap'
+    New-Item -ItemType Directory -Path $td -Force | Out-Null
+    Copy-Item (Join-Path $Repo 'statusline-tap.cjs') $td
+    $sample = '{"model":{"display_name":"X"},"rate_limits":{"five_hour":{"used_percentage":12,"resets_at":1786849200}}}'
+    [System.IO.File]::WriteAllText((Join-Path $td 'in.json'), $sample)
+    & cmd /c ('"{0}" "{1}" < "{2}" > "{3}"' -f $nodeCmd.Source, (Join-Path $td 'statusline-tap.cjs'), (Join-Path $td 'in.json'), (Join-Path $td 'out.bin'))
+    $in  = [System.IO.File]::ReadAllBytes((Join-Path $td 'in.json'))
+    $out = [System.IO.File]::ReadAllBytes((Join-Path $td 'out.bin'))
+    $state = Join-Path $td 'state-ratelimits.json'
+    ($in.Length -eq $out.Length) -and (-not (Compare-Object $in $out)) -and (Test-Path $state) -and
+        ((Get-Content $state -Raw -Encoding UTF8 | ConvertFrom-Json).rate_limits.five_hour.used_percentage -eq 12)
+}
+Test-Case 'tap --solo renders a usage line for users with no statusline of their own' {
+    if (-not $nodeCmd) { Write-Host '    (node not on PATH - skipped)'; return $true }
+    $td = Join-Path $Tmp 'tap'
+    $line = & cmd /c ('"{0}" "{1}" --solo < "{2}"' -f $nodeCmd.Source, (Join-Path $td 'statusline-tap.cjs'), (Join-Path $td 'in.json'))
+    ($line -join '') -match '5h 12%'
+}
+Test-Case 'tap survives non-JSON stdin by forwarding it untouched' {
+    if (-not $nodeCmd) { Write-Host '    (node not on PATH - skipped)'; return $true }
+    $td = Join-Path $Tmp 'tap'
+    [System.IO.File]::WriteAllText((Join-Path $td 'junk.txt'), 'not json at all')
+    & cmd /c ('"{0}" "{1}" < "{2}" > "{3}"' -f $nodeCmd.Source, (Join-Path $td 'statusline-tap.cjs'), (Join-Path $td 'junk.txt'), (Join-Path $td 'junk.out'))
+    (Get-Content (Join-Path $td 'junk.out') -Raw) -eq 'not json at all'
 }
 
 # -------------------------------------------------- doctor & rehearsal (child pwsh)
@@ -787,8 +869,17 @@ Test-Case 'no PowerShell 7-only syntax (project claims 5.1 support)' {
     }
     $ok
 }
+Test-Case 'the ratelimit brake is wired in and the panel surfaces the cache bilingually' {
+    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
+    $p = Get-Content (Join-Path $Repo 'panel.ps1') -Raw -Encoding UTF8
+    $h = Get-Content (Join-Path $Repo 'web\index.html') -Raw -Encoding UTF8
+    ($r -match "= 'brake'") -and ($r -match 'Get-ResetBrakeUntil') -and
+        ($p -match '/api/ratelimits') -and ($h -match 'api/ratelimits') -and
+        (([regex]::Matches($h, 'rl_5h:')).Count -eq 2)
+}
 Test-Case 'personal state stays out of git' {
-    $ignored = @('schedule.json', 'preheat-log.jsonl', 'relay-log.jsonl', '.claude')
+    $ignored = @('schedule.json', 'preheat-log.jsonl', 'relay-log.jsonl', '.claude',
+        'state-ratelimits.json', 'statusline-original.json')
     $ok = $true
     foreach ($p in $ignored) {
         git -C $Repo check-ignore $p 2>$null | Out-Null

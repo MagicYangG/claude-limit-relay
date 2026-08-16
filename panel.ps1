@@ -457,6 +457,18 @@ function Handle-ApiSessions($context) {
     Send-Json $context 200 $out
 }
 
+function Handle-ApiRateLimits($context) {
+    # cached usage windows, written by statusline-tap.cjs (empty {} until the
+    # tap is installed and a statusline has rendered once)
+    $obj = $null
+    try {
+        $p = Join-Path $Root 'state-ratelimits.json'
+        if (Test-Path $p) { $obj = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json }
+    } catch { }
+    if (-not $obj) { $obj = @{} }
+    Send-Json $context 200 $obj
+}
+
 function Handle-ApiSchedule($context) {
     $obj = $null
     try {
@@ -667,6 +679,7 @@ function Handle-Request($context) {
     if ($method -eq 'GET' -and $path -eq '/api/status')   { Handle-ApiStatus $context; return }
     if ($method -eq 'GET' -and $path -eq '/api/sessions') { Handle-ApiSessions $context; return }
     if ($method -eq 'GET' -and $path -eq '/api/schedule') { Handle-ApiSchedule $context; return }
+    if ($method -eq 'GET' -and $path -eq '/api/ratelimits') { Handle-ApiRateLimits $context; return }
 
     if ($method -eq 'POST' -and -not (Test-PostSecurity $context)) { return }
 
