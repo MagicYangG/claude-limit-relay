@@ -21,6 +21,10 @@ Commands:
                           open the interactive TUI on it
   sessions                Latest 10 session transcripts as a JSON array
                           (for panel.ps1's session picker)
+  doctor                  Precondition check-up: claude CLI, transcripts,
+                          scheduled tasks + wake flags, panel, journals
+  test                    Full-chain rehearsal in a sandbox with a mock claude:
+                          detect -> gate -> leg -> verify -> done, zero quota
 
 Design: at limit-exhaustion every Claude surface is dead, so this script is
 pure PowerShell until a probe ping passes. Rejected pings consume nothing.
@@ -1112,6 +1116,219 @@ function Invoke-Takeover {
     Open-TakeoverTab $pickd.session $pickd.cwd
 }
 
+function Write-Check([bool]$ok, [string]$name, [string]$detail = '', [switch]$WarnOnly, [string]$Hint = '') {
+    # detail rides along always (informational); Hint is remediation advice
+    # and only appears when the check did NOT pass
+    $suffix = ''
+    if ($detail) { $suffix = '  - ' + $detail }
+    if ($ok) { Write-Host ('[ OK ] ' + $name + $suffix) -ForegroundColor Green; return }
+    if ($Hint) { $suffix = $suffix + '  - ' + $Hint }
+    if ($WarnOnly) { $script:DoctorWarn++; Write-Host ('[WARN] ' + $name + $suffix) -ForegroundColor Yellow }
+    else { $script:DoctorFail++; Write-Host ('[FAIL] ' + $name + $suffix) -ForegroundColor Red }
+}
+
+function Invoke-Doctor {
+    # every silent way this tool has died in the field, checked in one pass:
+    # nothing here calls the API or burns quota
+    $script:DoctorFail = 0; $script:DoctorWarn = 0
+    Write-Host ''
+    Write-Host '=== claude-limit-relay doctor ===' -ForegroundColor Cyan
+
+    Write-Check ($PSVersionTable.PSVersion.Major -ge 5) ('PowerShell ' + $PSVersionTable.PSVersion)
+    Write-Check ([bool](Get-Command pwsh -ErrorAction SilentlyContinue)) 'pwsh (PowerShell 7) on PATH' -WarnOnly -Hint 'takeover tabs launch pwsh'
+
+    $claude = $null
+    try { $claude = Resolve-ClaudeExe } catch { }
+    Write-Check ([bool]$claude) 'claude CLI resolvable' $claude
+    if ($claude) {
+        $ver = ''
+        $vOut = Join-Path $Root ('.doctor-ver-{0}.tmp' -f $PID)
+        $vErr = Join-Path $Root ('.doctor-vererr-{0}.tmp' -f $PID)
+        try {
+            $p = Start-Process -FilePath $claude -ArgumentList '--version' `
+                -RedirectStandardOutput $vOut -RedirectStandardError $vErr -PassThru -NoNewWindow
+            if ($p.WaitForExit(30000)) { $ver = [string](Get-Content $vOut -Raw -ErrorAction SilentlyContinue) }
+            else { try { $p.Kill() } catch { } }
+        } catch { } finally { Remove-Item $vOut, $vErr -ErrorAction SilentlyContinue }
+        if ($ver) { $ver = $ver.Trim() }
+        Write-Check ([bool]$ver) 'claude --version answers' $ver
+    }
+
+    $proj = Join-Path $env:USERPROFILE '.claude\projects'
+    Write-Check (Test-Path $proj) 'transcript directory exists' $proj
+    Write-Check (@(Get-SessionFiles).Count -gt 0) 'session transcripts found' -WarnOnly -Hint 'none yet - use claude once first'
+
+    foreach ($d in @(@{ p = $ArmedDir; n = 'armed/' }, @{ p = $DoneDir; n = 'done/' })) {
+        $wOk = $true
+        try {
+            $probe = Join-Path $d.p ('.doctor-' + $PID)
+            Set-Content -Path $probe -Value 'x' -Encoding UTF8
+            Remove-Item $probe -Force
+        } catch { $wOk = $false }
+        Write-Check $wOk ($d.n + ' writable')
+    }
+    Write-Check (Test-Path $EmptyMcp) 'mcp-empty.json present' -Hint 'probes need the empty MCP config - restore it from the repo'
+
+    $cfg = Join-Path $Root 'schedule.json'
+    if (Test-Path $cfg) {
+        $cOk = $false; $nRules = 0
+        try {
+            $c = Get-Content $cfg -Raw -Encoding UTF8 | ConvertFrom-Json
+            $cOk = $true; $nRules = @($c.rules).Count
+        } catch { }
+        Write-Check $cOk 'schedule.json parses' ('{0} rule(s)' -f $nRules)
+    } else {
+        Write-Check $false 'schedule.json present' -WarnOnly -Hint 'copy schedule.example.json, then: preheat apply'
+    }
+
+    $pre = @(Get-ScheduledTask -TaskName 'ClaudePreheat*' -ErrorAction SilentlyContinue)
+    Write-Check ($pre.Count -gt 0) ('preheat tasks registered ({0})' -f $pre.Count) -WarnOnly -Hint 'run: preheat apply'
+    if ($pre.Count -gt 0) {
+        $noWake = @($pre | Where-Object { -not $_.Settings.WakeToRun })
+        Write-Check ($noWake.Count -eq 0) 'preheat tasks carry WakeToRun' -Hint 're-run preheat apply to refresh'
+    }
+    $probeTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($probeTask) { Write-Check ([bool]$probeTask.Settings.WakeToRun) 'probe task carries WakeToRun' }
+    else { Write-Host '[ -- ] probe task not registered (normal while nothing is armed)' }
+
+    # wake timers: -WakeToRun is dead weight if the power plan refuses wake timers
+    $wt = 'unknown'
+    try {
+        $out = powercfg /query SCHEME_CURRENT SUB_SLEEP RTCWAKE 2>$null
+        $line = ($out | Select-String '0x[0-9a-fA-F]{8}' | Select-Object -First 1)
+        if ($line) {
+            $v = $line.ToString()
+            if ($v -match '0x0+$') { $wt = 'disabled' }
+            elseif ($v -match '0x0*2$') { $wt = 'important-only' }
+            else { $wt = 'enabled' }
+        }
+    } catch { }
+    if ($wt -eq 'enabled') { Write-Check $true 'wake timers enabled (AC power plan)' }
+    else { Write-Check $false ('wake timers: ' + $wt) -WarnOnly -Hint 'a sleeping PC may not wake for a fire - powercfg > Sleep > Allow wake timers' }
+
+    Write-Check ([bool](Get-NetTCPConnection -LocalPort 7878 -State Listen -ErrorAction SilentlyContinue)) 'panel listening on 7878' -WarnOnly -Hint 'start: claude-panel'
+
+    # both per-user profile paths count, and any line invoking relay.ps1 counts:
+    # hand-written aliases predate the installer's marker block and are just as installed
+    $prOk = $false
+    try {
+        foreach ($pf in @($PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost)) {
+            if (-not (Test-Path $pf)) { continue }
+            $pc = Get-Content $pf -Raw -ErrorAction SilentlyContinue
+            if ($pc -and ($pc -match 'relay\.ps1')) { $prOk = $true; break }
+        }
+    } catch { }
+    Write-Check $prOk 'profile functions installed' -WarnOnly -Hint 'run: install.ps1'
+    Write-Check ([bool](Get-Module -ListAvailable -Name BurntToast)) 'BurntToast module (desktop toasts)' -WarnOnly -Hint 'optional: Install-Module BurntToast'
+
+    # journal recap: the last real fire / leg tells more than any static check
+    foreach ($jl in @(
+        @{ p = (Join-Path $Root 'preheat-log.jsonl'); ev = 'fire';   n = 'last preheat fire ended ok' },
+        @{ p = $LogPath;                              ev = 'resume'; n = 'last relay leg ended ok' })) {
+        if (-not (Test-Path $jl.p)) { continue }
+        $lastE = $null
+        foreach ($ln in @(Get-Content $jl.p -Tail 400 -Encoding UTF8)) {
+            try { $o = $ln | ConvertFrom-Json; if ($o.ev -eq $jl.ev) { $lastE = $o } } catch { }
+        }
+        if ($lastE) { Write-Check ([bool]$lastE.ok) $jl.n ('at ' + $lastE.ts) -WarnOnly }
+    }
+
+    Write-Host ''
+    Write-Host ('doctor: {0} failure(s), {1} warning(s)' -f $script:DoctorFail, $script:DoctorWarn) `
+        -ForegroundColor $(if ($script:DoctorFail -gt 0) { 'Red' } elseif ($script:DoctorWarn -gt 0) { 'Yellow' } else { 'Green' })
+    if ($script:DoctorFail -gt 0) { exit 1 }
+}
+
+function Invoke-Rehearsal {
+    # end-to-end dress rehearsal, zero quota: every state root is redirected
+    # into a throwaway sandbox and claude is replaced by a mock that answers a
+    # valid result JSON and appends a real turn to the fixture transcript. The
+    # real armed/ dir, scheduled tasks and transcripts are never touched.
+    Write-Host ''
+    Write-Host '=== relay rehearsal (sandboxed, zero quota) ===' -ForegroundColor Cyan
+    $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('clr-rehearsal-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $sid = 'ffffffff-1111-2222-3333-444444444444'
+    $prevProfile = $env:USERPROFILE
+    $failReason = $null
+    try {
+        # redirect every state root; functions read these script-scoped vars
+        $script:Root      = $sandbox
+        $script:ArmedDir  = Join-Path $sandbox 'armed'
+        $script:DoneDir   = Join-Path $sandbox 'done'
+        $script:LogPath   = Join-Path $sandbox 'relay-log.jsonl'
+        $script:StatePath = Join-Path $sandbox 'state.json'
+        $script:FirePit   = Join-Path $sandbox 'firepit'
+        $env:USERPROFILE  = $sandbox
+        $bucket = Join-Path $sandbox '.claude\projects\clr-rehearsal'
+        foreach ($d in @($script:ArmedDir, $script:DoneDir, $script:FirePit, $bucket)) {
+            New-Item -ItemType Directory -Path $d -Force | Out-Null
+        }
+        # a transcript that ends in the real kill-record shape (captured live 07-30)
+        $fixture = Join-Path $bucket ($sid + '.jsonl')
+        @(
+            '{"type":"user","message":{"role":"user","content":"long task"},"timestamp":"2026-01-01T01:00:00.000Z"}',
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"You''ve hit your session limit · resets 1:40pm"}]},"error":"rate_limit","isApiErrorMessage":true,"timestamp":"2026-01-01T02:00:00.000Z"}'
+        ) | Set-Content -Path $fixture -Encoding UTF8
+        # mock claude: answers like the real CLI in -p mode; a --resume call
+        # also appends a genuine assistant turn so the moved-transcript proof runs
+        $mockPs1 = Join-Path $sandbox 'mock-claude.ps1'
+        @(
+            ('$transcript = ''{0}''' -f $fixture),
+            'if ($args -contains ''--resume'') {',
+            '    $ts = (Get-Date).ToUniversalTime().ToString(''yyyy-MM-ddTHH:mm:ss.fffZ'')',
+            '    Add-Content -Path $transcript -Value (''{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"rehearsal leg reply"}]},"timestamp":"'' + $ts + ''"}'') -Encoding UTF8',
+            '}',
+            '[Console]::Out.Write(''{"type":"result","is_error":false,"result":"REHEARSAL DONE"}'')'
+        ) | Set-Content -Path $mockPs1 -Encoding UTF8
+        $mockCmd = Join-Path $sandbox 'mock-claude.cmd'
+        @(
+            '@echo off',
+            ('"{0}" -NoProfile -ExecutionPolicy Bypass -File "{1}" %*' -f (Resolve-HostShell), $mockPs1)
+        ) | Set-Content -Path $mockCmd -Encoding ASCII
+        @{ claude = $mockCmd } | ConvertTo-Json | Set-Content -Path $script:StatePath -Encoding UTF8
+        # the scheduler and the toaster stay untouched during a rehearsal
+        Set-Item function:script:Register-ProbeTask   -Value { param([int]$DelayMinutes = 2) }
+        Set-Item function:script:Unregister-ProbeTask -Value { }
+        Set-Item function:script:Send-Toast           -Value { param($text) }
+        Save-Entry @{
+            session = $sid; cwd = $sandbox; armedAt = (Get-Date).ToString('s')
+            legs = 0; maxLegs = 1; mode = 'wait'; fallback = 'none'; effort = 'high'; model = ''
+        }
+        Set-Content -Path (Join-Path $script:ArmedDir ($sid + '.prompt.txt')) -Value 'rehearsal' -Encoding UTF8
+        Write-Host '[ OK ] sandbox ready (fixture transcript ends at the kill record)'
+
+        Invoke-Probe
+        Write-Host '[ OK ] probe tick ran (ping -> gate -> leg -> verdict)'
+
+        $doneFile = Join-Path $script:DoneDir ($sid + '.json')
+        if (-not (Test-Path $doneFile)) { $failReason = 'no done record was written' }
+        else {
+            $d = Get-Content $doneFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (-not $d.ok) { $failReason = 'leg was not judged ok' }
+            elseif ($d.summary -ne 'REHEARSAL DONE') { $failReason = 'leg summary was not captured' }
+        }
+        if (-not $failReason -and (Test-Path (Join-Path $script:ArmedDir ($sid + '.json')))) {
+            $failReason = 'armed entry was not consumed'
+        }
+        if (-not $failReason) {
+            $tailTxt = Get-Content $fixture -Tail 1 -Encoding UTF8
+            if ($tailTxt -notmatch 'rehearsal leg reply') { $failReason = 'mock leg turn missing from transcript' }
+        }
+    } catch {
+        $failReason = $_.Exception.Message
+    } finally {
+        $env:USERPROFILE = $prevProfile
+        Remove-Item $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host ''
+    if ($failReason) {
+        Write-Host ('REHEARSAL FAIL: ' + $failReason) -ForegroundColor Red
+        exit 1
+    }
+    Write-Host 'REHEARSAL PASS - detect, gate, resume, verify and hand-off all work end to end' -ForegroundColor Green
+    Write-Host '(what this cannot prove: the real CLI, scheduled-task wake-ups, and quota behavior - see doctor)'
+}
+
 switch -Regex ($Command) {
     '^arm$'      { Invoke-Arm; break }
     '^probe$'    { Invoke-Probe; break }
@@ -1120,5 +1337,7 @@ switch -Regex ($Command) {
     '^takeover$' { Invoke-Takeover; break }
     '^legs$'     { Invoke-SetLegs; break }
     '^sessions$' { Invoke-Sessions; break }
-    default      { Write-Host 'usage: relay arm [sessionIdPrefix] [-Watch] [-Prompt "..."] [-MaxLegs N] | disarm [prefix] | legs <prefix> <1-9> | status [-Json] | takeover [prefix] | sessions | probe' }
+    '^doctor$'   { Invoke-Doctor; break }
+    '^test$'     { Invoke-Rehearsal; break }
+    default      { Write-Host 'usage: relay arm [sessionIdPrefix] [-Watch] [-Prompt "..."] [-MaxLegs N] | disarm [prefix] | legs <prefix> <1-9> | status [-Json] | takeover [prefix] | sessions | doctor | test | probe' }
 }

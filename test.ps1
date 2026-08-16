@@ -646,6 +646,34 @@ try {
     if ($panelProc) { try { Stop-Process -Id $panelProc.Id -Force -ErrorAction SilentlyContinue } catch { } }
 }
 
+# -------------------------------------------------- doctor & rehearsal (child pwsh)
+Write-Host ''
+Write-Host '-- doctor & rehearsal --'
+$childShell = 'pwsh'
+if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) { $childShell = 'powershell' }
+
+Test-Case 'relay doctor runs its checks and prints a summary' {
+    # environment-dependent results (warnings are fine) - what must hold is
+    # that the check-up itself completes and reports
+    $out = & $childShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Repo 'relay.ps1') doctor 2>&1 | Out-String
+    ($out -match 'claude-limit-relay doctor') -and ($out -match 'doctor: \d+ failure') -and
+        ($out -match '\[ OK \]')
+}
+Test-Case 'relay test rehearses the full chain in a sandbox and passes' {
+    # the big one: detect -> gate -> mock leg -> moved-transcript proof ->
+    # done record, all against a throwaway sandbox, zero quota
+    $out = & $childShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Repo 'relay.ps1') test 2>&1 | Out-String
+    ($LASTEXITCODE -eq 0) -and ($out -match 'REHEARSAL PASS')
+}
+Test-Case 'the rehearsal never touches the real scheduler or armed dir' {
+    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
+    # the sandbox redirect and the scheduler stubs must both be present
+    ($r -match 'function Invoke-Rehearsal') -and
+        ($r -match 'Set-Item function:script:Register-ProbeTask') -and
+        ($r -match 'Set-Item function:script:Unregister-ProbeTask') -and
+        ($r -match '\$script:ArmedDir\s*=')
+}
+
 # ----------------------------------------------------------------- statics
 Write-Host ''
 Write-Host '-- static hygiene --'
