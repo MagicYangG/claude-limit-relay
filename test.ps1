@@ -506,6 +506,17 @@ Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
         $e = Get-Content (Join-Path $ArmedDir "$sid.json") -Raw -Encoding UTF8 | ConvertFrom-Json
         ($e.maxLegs -eq 4) -and ($e.legs -eq 1) -and ($e.mode -eq 'wait')
     }
+    Test-Case 'Complete-Entry records the leg summary for the panel' {
+        # "what did that leg do all night" must be answerable from the panel
+        $ArmedDir = Join-Path $Tmp 'armed-done'
+        $DoneDir  = Join-Path $Tmp 'done-done'
+        New-Item -ItemType Directory -Path $ArmedDir, $DoneDir -Force | Out-Null
+        $sid = '55555555-6666-7777-8888-999999999999'
+        $e = [pscustomobject]@{ session = $sid; cwd = 'C:\x' }
+        Complete-Entry $e $true 'out.log' 'wrapped everything up'
+        $d = Get-Content (Join-Path $DoneDir "$sid.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        ($d.summary -eq 'wrapped everything up') -and ($d.ok -eq $true)
+    }
     Test-Case 'an alive leg lock blocks the tick (no double-launch, no false yield)' {
         # regression: the yield guard misread an in-flight leg's own writes as
         # a human taking over and flipped the entry back to watch mid-leg
@@ -676,6 +687,19 @@ Test-Case 'the probe launch loop goes through the fire-time gate' {
         ($r -match '\$gate = Resolve-FireGate') -and
         ($r -match "'finished-by-others'") -and
         ($r -match '"isSidechain"')
+}
+Test-Case 'a leg that exits ok must also prove the transcript moved' {
+    # tools in the wild have shipped RESUMED banners while nothing resumed;
+    # exit 0 + a result string is not proof - the verdict phase must compare
+    # transcript activity against a pre-launch snapshot
+    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
+    ($r -match 'preAct') -and ($r -match 'transcript did not move')
+}
+Test-Case 'the panel surfaces the leg summary bilingually' {
+    $p = Get-Content (Join-Path $Repo 'panel.ps1') -Raw -Encoding UTF8
+    $h = Get-Content (Join-Path $Repo 'web\index.html') -Raw -Encoding UTF8
+    ($p -match 'summary') -and ($h -match 'd\.summary') -and
+        (([regex]::Matches($h, 'last_reply:')).Count -eq 2)
 }
 Test-Case 'model-cap park path exists: no-fallback entries freeze instead of burning legs' {
     # quality-critical tasks may refuse the fallback hop - the entry must then

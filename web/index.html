@@ -352,6 +352,7 @@ var I18N = {
     take:'接管', cancel:'取消', remove:'移除', queue_empty:'队列是空的。',
     confirm_take:'这个对话几分钟前还有往来，原窗口可能还开着。\n再开一个交互窗口会双写同一份对话，确定接管？',
     done_ok:'✅ 完成', done_fail:'⚠️ 没跑完', no_done:'还没有已结束的接力。',
+    last_reply:'最后回复：',
     schednote_derived:'这张表由已注册任务反推（预热时刻 + 5 小时 = 重置时刻）。',
     stamp_updated:'更新于 ', stamp_lost:'连接中断，重试中…',
     chip_edit_title:'点击修改', chip_del_title:'删除', wadd_title:'加一个重置时刻',
@@ -391,6 +392,7 @@ var I18N = {
     take:'Take over', cancel:'Cancel', remove:'Remove', queue_empty:'Queue is empty.',
     confirm_take:'This conversation had activity minutes ago; its original window may still be open.\nOpening a second interactive window double-writes the same conversation. Take over anyway?',
     done_ok:'✅ Done', done_fail:'⚠️ Unfinished', no_done:'No finished relays yet.',
+    last_reply:'Last reply: ',
     schednote_derived:'This table is inferred from registered tasks (fire time + 5h = reset time).',
     stamp_updated:'Updated ', stamp_lost:'Connection lost, retrying…',
     chip_edit_title:'Click to edit', chip_del_title:'Delete', wadd_title:'Add a reset time',
@@ -654,6 +656,7 @@ function renderDone(){
       '<div class="lbody">' +
         '<div><span class="lid">' + esc(String(d.session).slice(0,8)) + '</span>' + b + tm + '</div>' +
         (d.snippet ? '<div class="lsnip">' + esc(d.snippet) + '</div>' : '') +
+        (d.summary ? '<div class="lsnip">' + t('last_reply') + esc(d.summary) + '</div>' : '') +
         '<div class="lcwd">' + esc(d.cwd || '') + '</div>' +
       '</div>' +
       '<button class="mini on" data-take="' + esc(d.session) + '">' + t('take') + '</button>' +

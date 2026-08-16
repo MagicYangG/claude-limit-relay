@@ -463,8 +463,10 @@ function Remove-Entry($session) {
     Remove-Item (Join-Path $ArmedDir ($session + '.lock.json')) -ErrorAction SilentlyContinue
 }
 
-function Complete-Entry($e, $ok, $out) {
-    @{ session = $e.session; cwd = $e.cwd; ok = $ok; out = $out; finishedAt = (Get-Date).ToString('s') } |
+function Complete-Entry($e, $ok, $out, $summary = '') {
+    # summary = the last assistant reply's head, so "what did that leg do all
+    # night" is answerable from the panel without hunting for the raw log
+    @{ session = $e.session; cwd = $e.cwd; ok = $ok; out = $out; summary = $summary; finishedAt = (Get-Date).ToString('s') } |
         ConvertTo-Json -Compress | Set-Content -Path (Join-Path $DoneDir ($e.session + '.json')) -Encoding UTF8
     Remove-Entry $e.session
 }
@@ -617,6 +619,11 @@ function Start-ResumeLeg($e) {
     if (-not (Test-Path $workDir)) { $workDir = $Root }
     $pf = Join-Path $ArmedDir ($e.session + '.prompt.txt')
     if (-not (Test-Path $pf)) { Set-Content -Path $pf -Value $DefaultPrompt -Encoding UTF8 }
+    # snapshot the newest real turn BEFORE launching: the verdict phase compares
+    # against it to prove the leg actually moved the conversation
+    $preAct = $null
+    $sfL = Get-SessionFileById $e.session
+    if ($sfL) { $preAct = Get-TranscriptActivity $sfL.FullName }
     # a leg MUST persist its turns - the top-of-script marker scrub is the
     # primary defense, this is the belt
     $env:CLAUDE_CODE_FORCE_SESSION_PERSISTENCE = '1'
@@ -634,7 +641,7 @@ function Start-ResumeLeg($e) {
         -PassThru -NoNewWindow
     @{ pid = $p.Id; leg = $e.legs; startedAt = (Get-Date).ToString('s'); out = $rawFile } |
         ConvertTo-Json -Compress | Set-Content -Path (Join-Path $ArmedDir ($e.session + '.lock.json')) -Encoding UTF8
-    @{ entry = $e; proc = $p; raw = $rawFile; err = $errFile; out = $outFile; started = Get-Date }
+    @{ entry = $e; proc = $p; raw = $rawFile; err = $errFile; out = $outFile; started = Get-Date; preAct = $preAct }
 }
 
 function Resolve-LegVerdict($rec) {
@@ -664,6 +671,20 @@ function Resolve-LegVerdict($rec) {
             $hitLimit = (($raw + ' ' + $stderrTxt) -match 'Claude AI usage limit reached')
         }
         if ($stderrTxt -and ($stderrTxt -match $LimitRx)) { $hitLimit = $true }
+        if ($ok) {
+            # trust-but-verify: exit 0 plus a result string is not proof the
+            # conversation moved - a resume can "succeed" while writing nothing
+            # (bucket mismatch, silent persistence failure; tools in the wild
+            # have shipped RESUMED banners over exactly this). Ground truth is
+            # the transcript: a real turn newer than launch must exist.
+            $sfV = Get-SessionFileById $e.session
+            $postAct = $null
+            if ($sfV) { $postAct = Get-TranscriptActivity $sfV.FullName }
+            if (-not ($postAct -and ((-not $rec.preAct) -or ($postAct -gt $rec.preAct)))) {
+                $ok = $false
+                $errMsg = 'leg exited ok but the transcript did not move - treated as failure'
+            }
+        }
         if ($resultText) { Set-Content -Path $rec.out -Value $resultText -Encoding UTF8 }
         elseif ($raw)    { Set-Content -Path $rec.out -Value $raw -Encoding UTF8 }
     } catch {
@@ -732,7 +753,12 @@ function Resolve-LegVerdict($rec) {
         Send-Toast ('{0}: leg {1} ended ({2}) - re-armed' -f $e.session.Substring(0, 8), $e.legs, $reason)
         return   # entry stays armed; next probe tick handles it
     }
-    Complete-Entry $e $ok $rec.out
+    $summ = ''
+    if ($resultText) {
+        $summ = $resultText.Trim()
+        if ($summ.Length -gt 200) { $summ = $summ.Substring(0, 200) }
+    }
+    Complete-Entry $e $ok $rec.out $summ
     if ($ok) { Send-Toast ('{0}: relay done after leg {1} - "relay takeover" to pick up' -f $e.session.Substring(0, 8), $e.legs) }
     else     { Send-Toast ('{0}: relay stopped after leg {1}/{2} without success' -f $e.session.Substring(0, 8), $e.legs, $e.maxLegs) }
 }

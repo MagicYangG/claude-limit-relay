@@ -208,7 +208,9 @@ function Get-RelayStatusObject {
             $d = Get-Content $df.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
             $snip = ''
             if ($doneOut.Count -lt 10) { $snip = Get-SessionSnippetById $d.session }   # cap enrichment
-            $doneOut += @{ session = $d.session; cwd = $d.cwd; ok = [bool]$d.ok; finishedAt = $d.finishedAt; snippet = $snip }
+            $dsum = ''
+            if ($d.PSObject.Properties['summary'] -and $d.summary) { $dsum = [string]$d.summary }
+            $doneOut += @{ session = $d.session; cwd = $d.cwd; ok = [bool]$d.ok; finishedAt = $d.finishedAt; snippet = $snip; summary = $dsum }
         } catch { }
     }
     @{ armed = $armedOut; done = $doneOut }
