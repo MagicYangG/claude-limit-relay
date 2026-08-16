@@ -10,6 +10,11 @@ Commands:
   reset HH:mm    One-shot: fire so the window RESETS at the given time (fire = reset - 5h)
   +Nh / +Nm      One-shot: fire N hours/minutes from now
   fire           Fire the preheat ping immediately (used by scheduled tasks)
+  learn [auto]   Derive a preheat schedule from your last 30 days of prompts
+                 (median start per weekday -> suggested reset time) plus a
+                 7-day window-utilization report. 'auto' writes the suggested
+                 rules into schedule.json (backed up) and applies them.
+                 -Json = machine-readable report (for panel.ps1)
   off            Unregister all preheat tasks
 
 Mechanism: the Max 5h usage window is anchored by the FIRST request when no
@@ -412,6 +417,167 @@ function Invoke-StatusJson {
     ConvertTo-Json -InputObject $out -Compress -Depth 6
 }
 
+# ---------- learn: schedule suggestions + waste report from prompt history ----------
+
+function Get-HistoryTimestamps([int]$days = 30) {
+    # ~\.claude\history.jsonl logs one line per user prompt with an epoch-ms
+    # timestamp - the cheapest full activity record there is (transcripts
+    # would mean reading hundreds of MB for the same numbers)
+    $h = Join-Path $env:USERPROFILE '.claude\history.jsonl'
+    $out = New-Object System.Collections.Generic.List[datetime]
+    if (-not (Test-Path $h)) { return ,$out }
+    $cut = (Get-Date).AddDays(-$days)
+    try {
+        foreach ($line in [System.IO.File]::ReadLines($h)) {
+            if ($line -notmatch '"timestamp"\s*:\s*(\d+)') { continue }
+            $n = [double]$Matches[1]
+            if ($n -gt 1e12) { $n = $n / 1000 }
+            $t = [DateTimeOffset]::FromUnixTimeSeconds([long]$n).LocalDateTime
+            if ($t -ge $cut) { [void]$out.Add($t) }
+        }
+    } catch { }
+    $out.Sort()
+    ,$out
+}
+
+function Get-WindowStats($stamps) {
+    # reconstruct 5h windows the way the account anchors them: the first
+    # prompt while no window is active opens one; everything within 5h of the
+    # anchor rides it; the next prompt after expiry anchors the next
+    $wins = @()
+    $anchor = $null; $lastIn = $null
+    foreach ($t in $stamps) {
+        if ($anchor -and ($t -lt $anchor.AddHours($WindowHours))) { $lastIn = $t; continue }
+        if ($anchor) { $wins += , @{ anchor = $anchor; last = $lastIn } }
+        $anchor = $t; $lastIn = $t
+    }
+    if ($anchor) { $wins += , @{ anchor = $anchor; last = $lastIn } }
+    # plain return (callers wrap in @()): a `,`-wrapped return here would
+    # double-wrap and hand Where-Object one 54-anchor blob instead of 54 windows
+    $wins
+}
+
+function Get-MedianTimeOfDay($times) {
+    if (-not $times -or $times.Count -eq 0) { return $null }
+    $sorted = @($times | Sort-Object { $_.TotalMinutes })
+    $sorted[[int][Math]::Floor(($sorted.Count - 1) / 2)]
+}
+
+function Get-LearnReport($stamps, $now) {
+    $wins = @(Get-WindowStats $stamps)
+    $byDay = @{}
+    foreach ($w in $wins) {
+        $d = $w.anchor.DayOfWeek.ToString().Substring(0, 3)
+        if (-not $byDay[$d]) { $byDay[$d] = New-Object System.Collections.Generic.List[object] }
+        [void]$byDay[$d].Add($w.anchor.TimeOfDay)
+    }
+    $days = @()
+    foreach ($d in @('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')) {
+        if (-not $byDay[$d]) { continue }
+        $ts = $byDay[$d]
+        $median = Get-MedianTimeOfDay $ts
+        $suggest = $null
+        if (($ts.Count -ge 2) -and $median) {
+            # reset ~1h after the typical start: early work rides the old
+            # window's tail, the bulk of the session gets a fresh one
+            $m = [Math]::Round(($median.TotalMinutes + 60) / 30) * 30
+            $m = $m % 1440
+            $suggest = ([timespan]::FromMinutes($m)).ToString('hh\:mm')
+        }
+        $days += , @{ day = $d; samples = $ts.Count; median = $median.ToString('hh\:mm'); suggest = $suggest }
+    }
+    # utilization, last 7 days: prompts under-count long agent runs, so each
+    # window gets a 30-min grace past its last prompt - still an ESTIMATE
+    $wk = @($wins | Where-Object { $_.anchor -ge $now.AddDays(-7) })
+    $engaged = 0.0; $total = 0.0
+    foreach ($w in $wk) {
+        $end = $w.anchor.AddHours($WindowHours)
+        if ($end -gt $now) { $end = $now }
+        $winH = ($end - $w.anchor).TotalHours
+        if ($winH -le 0) { continue }
+        $total += $winH
+        $e = (($w.last - $w.anchor).TotalHours) + 0.5
+        if ($e -gt $winH) { $e = $winH }
+        $engaged += $e
+    }
+    $pct = $null
+    if ($total -gt 0) { $pct = [int][Math]::Round(100 * $engaged / $total) }
+    @{
+        days  = $days
+        waste = @{ windows = $wk.Count; engagedH = [Math]::Round($engaged, 1); totalH = [Math]::Round($total, 1); usedPct = $pct }
+    }
+}
+
+function Invoke-Learn {
+    $stamps = Get-HistoryTimestamps 30
+    if ($stamps.Count -eq 0) {
+        if ($Json) { ConvertTo-Json -InputObject @{ days = @(); waste = $null } -Compress }
+        else { Write-Host 'no prompt history found (~\.claude\history.jsonl) - nothing to learn from' }
+        return
+    }
+    $rep = Get-LearnReport $stamps (Get-Date)
+    if ($Json) { ConvertTo-Json -InputObject $rep -Compress -Depth 6; return }
+
+    Write-Host ''
+    Write-Host '=== preheat learn (last 30 days of local prompts) ===' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host 'day  windows  median-start  suggested-reset'
+    foreach ($d in $rep.days) {
+        $s = $d.suggest; if (-not $s) { $s = '(need >=2 windows)' }
+        Write-Host ('{0}  {1}  {2}         {3}' -f $d.day, ([string]$d.samples).PadLeft(7), $d.median, $s)
+    }
+    $w = $rep.waste
+    if ($w -and $w.windows -gt 0) {
+        Write-Host ''
+        Write-Host ('last 7 days: {0} window(s) opened, ~{1}h engaged of {2}h window time ({3}% used, estimate)' -f `
+            $w.windows, $w.engagedH, $w.totalH, $w.usedPct)
+    }
+    $groups = [ordered]@{}
+    foreach ($d in $rep.days) {
+        if (-not $d.suggest) { continue }
+        if (-not $groups.Contains($d.suggest)) { $groups[$d.suggest] = @() }
+        $groups[$d.suggest] += $d.day
+    }
+    if ($groups.Count -eq 0) {
+        Write-Host ''
+        Write-Host 'not enough data for suggestions yet (a weekday needs >=2 observed windows)'
+        return
+    }
+    Write-Host ''
+    Write-Host 'suggested rules:'
+    foreach ($k in $groups.Keys) { Write-Host ('  {0}: reset {1}' -f ($groups[$k] -join ','), $k) }
+
+    if ($Arg -ne 'auto') {
+        Write-Host ''
+        Write-Host 'apply them: preheat learn auto   (backs up schedule.json, writes these rules, runs apply)'
+        return
+    }
+    # auto: write + apply, preserving the proxy; days without a suggestion get
+    # no rule (no observed rhythm -> nothing worth pre-warming)
+    $proxy = ''
+    try {
+        if (Test-Path $ConfigPath) {
+            $probe = Get-Content $ConfigPath -Raw -Encoding UTF8
+            if ($probe) {
+                Copy-Item $ConfigPath ($ConfigPath + '.bak') -Force
+                $c0 = $probe | ConvertFrom-Json
+                if ($c0.PSObject.Properties['proxy']) { $proxy = $c0.proxy }
+            }
+        }
+    } catch { }
+    $rulesOut = @()
+    foreach ($k in $groups.Keys) { $rulesOut += [ordered]@{ days = @($groups[$k]); reset = [string]$k } }
+    $newConfig = [ordered]@{
+        _readme = 'days: Mon..Sun | reset = HH:mm target reset time (previous 5h window expiry); fire time auto = reset - 5h | edit then run: preheat apply'
+        proxy   = $proxy
+        rules   = $rulesOut
+    }
+    (ConvertTo-Json -InputObject $newConfig -Depth 6) | Set-Content -Path $ConfigPath -Encoding UTF8
+    Write-Host ''
+    Write-Host 'schedule.json written (previous copy saved as schedule.json.bak) - applying:'
+    Invoke-Apply
+}
+
 function Invoke-Off {
     Get-ScheduledTask -TaskName 'ClaudePreheat*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
     Write-Log @{ ev = 'off' }
@@ -422,6 +588,7 @@ switch -Regex ($Command) {
     '^apply$'  { Invoke-Apply; break }
     '^fire$'   { Invoke-Fire; break }
     '^status$' { if ($Json) { Invoke-StatusJson } else { Invoke-Status }; break }
+    '^learn$'  { Invoke-Learn; break }
     '^off$'    { Invoke-Off; break }
     '^at$'     {
         if (-not $Arg) { throw 'usage: preheat at HH:mm' }
@@ -446,6 +613,6 @@ switch -Regex ($Command) {
         break
     }
     default {
-        Write-Host 'usage: preheat apply | status [-Json] | at HH:mm | reset HH:mm | +Nh | +Nm | fire | off'
+        Write-Host 'usage: preheat apply | status [-Json] | learn [auto] | at HH:mm | reset HH:mm | +Nh | +Nm | fire | off'
     }
 }

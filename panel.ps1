@@ -68,6 +68,10 @@ $RelayStatusCacheTtlSec    = 45
 $script:SessionsCache      = @{ value = $null; ts = [datetime]::MinValue }
 $SessionsCacheTtlSec       = 120
 
+# learn report shells out to preheat.ps1 (history scan); long TTL, lazy
+$script:LearnCache         = @{ value = $null; ts = [datetime]::MinValue }
+$LearnCacheTtlSec          = 600
+
 # full-UUID validator shared by relay session-id inputs (Finding 7)
 $script:UuidPattern = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
@@ -469,6 +473,26 @@ function Handle-ApiRateLimits($context) {
     Send-Json $context 200 $obj
 }
 
+function Handle-ApiLearn($context) {
+    # 30-day rhythm + 7-day window-utilization report from preheat.ps1 learn
+    $now = Get-Date
+    $age = [double]::PositiveInfinity
+    if ($script:LearnCache.value) { $age = ($now - $script:LearnCache.ts).TotalSeconds }
+    if ($script:LearnCache.value -and $age -lt $LearnCacheTtlSec) {
+        Send-Json $context 200 $script:LearnCache.value
+        return
+    }
+    $obj = $null
+    try {
+        $res = Invoke-BackendCommand -ScriptPath $PreheatScript -CmdArgs @('learn', '-Json')
+        if ($res.ExitCode -eq 0 -and $res.StdOut) { $obj = $res.StdOut.Trim() | ConvertFrom-Json }
+    } catch { }
+    if (-not $obj) { $obj = @{ days = @(); waste = $null } }
+    $script:LearnCache.value = $obj
+    $script:LearnCache.ts = $now
+    Send-Json $context 200 $obj
+}
+
 function Handle-ApiSchedule($context) {
     $obj = $null
     try {
@@ -680,6 +704,7 @@ function Handle-Request($context) {
     if ($method -eq 'GET' -and $path -eq '/api/sessions') { Handle-ApiSessions $context; return }
     if ($method -eq 'GET' -and $path -eq '/api/schedule') { Handle-ApiSchedule $context; return }
     if ($method -eq 'GET' -and $path -eq '/api/ratelimits') { Handle-ApiRateLimits $context; return }
+    if ($method -eq 'GET' -and $path -eq '/api/learn')      { Handle-ApiLearn $context; return }
 
     if ($method -eq 'POST' -and -not (Test-PostSecurity $context)) { return }
 

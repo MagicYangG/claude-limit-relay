@@ -187,6 +187,47 @@ Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
         $null -eq (Get-TranscriptActivity (Join-Path $Tmp 'does-not-exist.jsonl'))
     }
 
+    Write-Host '-- preheat: learn (windows, suggestions, utilization) --'
+    Test-Case 'window reconstruction: prompts inside 5h ride one window, later ones anchor anew' {
+        $base = (Get-Date).Date.AddDays(-3).AddHours(9)
+        $wins = @(Get-WindowStats @($base, $base.AddHours(1), $base.AddHours(4), $base.AddHours(6)))
+        ($wins.Count -eq 2) -and ($wins[0].anchor -eq $base) -and
+            ($wins[0].last -eq $base.AddHours(4)) -and ($wins[1].anchor -eq $base.AddHours(6))
+    }
+    Test-Case 'learn report: median start -> reset suggestion, and 7-day utilization' {
+        # two windows exactly 7 days apart (same weekday by construction):
+        # medians 09:00/09:00 -> suggest 10:00; only the recent one counts for
+        # utilization: engaged 1.5h + 0.5h grace of 5h = 40%
+        $a1 = (Get-Date).Date.AddDays(-10).AddHours(9)
+        $a2 = $a1.AddDays(7)
+        $rep = Get-LearnReport @($a1, $a1.AddHours(1), $a2, $a2.AddHours(1.5)) (Get-Date)
+        $day = @($rep.days | Where-Object { $_.samples -eq 2 })
+        ($day.Count -eq 1) -and ($day[0].suggest -eq '10:00') -and
+            ($rep.waste.windows -eq 1) -and ($rep.waste.usedPct -eq 40)
+    }
+    Test-Case 'a single observed window per weekday yields no suggestion (need >=2)' {
+        $a1 = (Get-Date).Date.AddDays(-3).AddHours(9)
+        $rep = Get-LearnReport @($a1, $a1.AddHours(1)) (Get-Date)
+        ($rep.days.Count -eq 1) -and ($null -eq $rep.days[0].suggest)
+    }
+    Test-Case 'history parsing: epoch-ms lines in range count, old and junk lines do not' {
+        $prev = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = $Tmp
+            $hd = Join-Path $Tmp '.claude'
+            New-Item -ItemType Directory -Path $hd -Force | Out-Null
+            $ms = { param($d) [DateTimeOffset]::new($d).ToUnixTimeMilliseconds() }
+            @(
+                ('{"display":"x","timestamp":' + (& $ms (Get-Date).AddDays(-2)) + ',"project":"p"}'),
+                ('{"display":"y","timestamp":' + (& $ms (Get-Date).AddDays(-1)) + ',"project":"p"}'),
+                ('{"display":"old","timestamp":' + (& $ms (Get-Date).AddDays(-35)) + ',"project":"p"}'),
+                'not json at all'
+            ) | Set-Content -Path (Join-Path $hd 'history.jsonl') -Encoding UTF8
+            $st = Get-HistoryTimestamps 30
+            $st.Count -eq 2
+        } finally { $env:USERPROFILE = $prev }
+    }
+
     Write-Host '-- preheat: journal rotation --'
     Test-Case 'a journal over 2MB is trimmed to the last 1000 lines + the new one' {
         $LogPath = Join-Path $Tmp 'rot.jsonl'   # shadows the real journal in this scope
@@ -682,6 +723,10 @@ try {
         $raw = (Invoke-WebRequest -Uri "$base/api/ratelimits" -UseBasicParsing -TimeoutSec 15).Content
         $raw.TrimStart().StartsWith('{')
     }
+    Test-Case 'GET /api/learn answers the rhythm report (shell-out, cached)' {
+        $s = (Invoke-WebRequest -Uri "$base/api/learn" -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
+        $null -ne $s.PSObject.Properties['days']
+    }
     Test-Case 'POST /api/preheat/once rejects a hostile value server-side -> 400' {
         # the once endpoint used to trust the body value all the way into the
         # backend command line; a value like  1h\" -Command off  spliced argv
@@ -868,6 +913,13 @@ Test-Case 'no PowerShell 7-only syntax (project claims 5.1 support)' {
         if ($c -match '\?\?' -or $c -match '\)\s*\?\s*[^\s]+\s*:\s') { $ok = $false }
     }
     $ok
+}
+Test-Case 'learn ships end to end: preheat command, panel endpoint, bilingual line' {
+    $pre = Get-Content (Join-Path $Repo 'preheat.ps1') -Raw -Encoding UTF8
+    $pan = Get-Content (Join-Path $Repo 'panel.ps1') -Raw -Encoding UTF8
+    $h = Get-Content (Join-Path $Repo 'web\index.html') -Raw -Encoding UTF8
+    ($pre -match "'\^learn\$'") -and ($pan -match '/api/learn') -and
+        (([regex]::Matches($h, 'learn_waste:')).Count -eq 2)
 }
 Test-Case 'the ratelimit brake is wired in and the panel surfaces the cache bilingually' {
     $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8

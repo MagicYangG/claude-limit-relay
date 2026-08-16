@@ -241,6 +241,7 @@ select{
   <h2 data-i18n="sched_h2"></h2>
   <p class="lead" data-i18n="sched_lead"></p>
   <div id="rlbox" style="display:none"></div>
+  <div id="learnbox" class="rlage" style="display:none;margin:-4px 0 14px"></div>
   <div class="rowhead"><div class="t" data-i18n="sched_scheduled"></div></div>
   <div id="tasks"></div>
   <hr class="hr">
@@ -364,6 +365,7 @@ var I18N = {
     done_ok:'✅ 完成', done_fail:'⚠️ 没跑完', no_done:'还没有已结束的接力。',
     last_reply:'最后回复：',
     rl_5h:'5 小时窗口', rl_wk:'周额度', rl_reset:'重置 ', rl_src:'来自 statusline 缓存 · ',
+    learn_waste:'过去 7 天开了 {n} 个窗口，窗口时间利用率 {p}%（估算）· 终端跑 preheat learn 可按作息生成预热排期',
     schednote_derived:'这张表由已注册任务反推（预热时刻 + 5 小时 = 重置时刻）。',
     stamp_updated:'更新于 ', stamp_lost:'连接中断，重试中…',
     chip_edit_title:'点击修改', chip_del_title:'删除', wadd_title:'加一个重置时刻',
@@ -405,6 +407,7 @@ var I18N = {
     done_ok:'✅ Done', done_fail:'⚠️ Unfinished', no_done:'No finished relays yet.',
     last_reply:'Last reply: ',
     rl_5h:'5-hour window', rl_wk:'Weekly', rl_reset:'resets ', rl_src:'from statusline cache · ',
+    learn_waste:'Last 7 days: {n} windows opened, {p}% of window time engaged (estimate) · run preheat learn to derive a schedule from your rhythm',
     schednote_derived:'This table is inferred from registered tasks (fire time + 5h = reset time).',
     stamp_updated:'Updated ', stamp_lost:'Connection lost, retrying…',
     chip_edit_title:'Click to edit', chip_del_title:'Delete', wadd_title:'Add a reset time',
@@ -421,7 +424,7 @@ function t(k){ var d = I18N[LANG] || I18N.zh; return (k in d) ? d[k] : (I18N.zh[
 var DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 var DAYCN = {Mon:'一',Tue:'二',Wed:'三',Thu:'四',Fri:'五',Sat:'六',Sun:'日'};
 function dayShort(d){ return LANG === 'en' ? d : DAYCN[d]; }
-var state = { status:null, sessions:[], pick:null, sesKey:'', busy:false, stamp:null, schedLoaded:false, rl:null };
+var state = { status:null, sessions:[], pick:null, sesKey:'', busy:false, stamp:null, schedLoaded:false, rl:null, learn:null };
 
 /* ---------- utils ---------- */
 function $(id){ return document.getElementById(id); }
@@ -872,6 +875,21 @@ function refreshRateLimits(){
   }).catch(function(){ /* the panel works fine without the tap */ });
 }
 
+/* ---------- learn line (7-day window utilization) ---------- */
+function renderLearn(){
+  var box = $('learnbox');
+  var w = state.learn && state.learn.waste;
+  if (!w || !w.windows || w.usedPct == null) { box.style.display = 'none'; box.textContent = ''; return; }
+  box.style.display = '';
+  box.textContent = t('learn_waste').replace('{n}', w.windows).replace('{p}', w.usedPct);
+}
+function refreshLearn(){
+  return getJSON('/api/learn').then(function(r){
+    state.learn = r || null;
+    renderLearn();
+  }).catch(function(){ /* optional */ });
+}
+
 /* ---------- refresh loops ---------- */
 function refreshStatus(){
   refreshRateLimits();
@@ -911,7 +929,7 @@ function applyStatic(){
 }
 function rerenderDynamic(){
   renderWeek(); renderSessions();
-  renderTasks(); renderArmed(); renderDone(); renderRateLimits();
+  renderTasks(); renderArmed(); renderDone(); renderRateLimits(); renderLearn();
   if (state.status && state.status.preheat) {
     var ig = state.status.preheat;
     var rules = rulesFromTasks(ig.tasks);
@@ -974,8 +992,10 @@ applyStatic();
 renderWeek();
 refreshStatus();
 refreshSessions();
+refreshLearn();
 setInterval(refreshStatus, 60000);
 setInterval(refreshSessions, 300000);
+setInterval(refreshLearn, 600000);
 setInterval(tickStamp, 30000);
 
 })();
