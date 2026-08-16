@@ -395,12 +395,19 @@ function Get-SessionTailState($file) {
     # the sentry stand down on a limit-killed task (observed live 07-30). Only
     # those structured fields may flip the verdict: transcripts around this
     # tool are full of limit words in ordinary prose.
+    # The verdict comes from the MAIN chain only: subagent records (isSidechain)
+    # land in the same file, and parallel agents draining after a kill can bury
+    # the kill record under dozens of their own assistant lines - reading one of
+    # those as the tail flipped a limit-killed task to 'finished'. Record types
+    # are an ALLOW-LIST (user/assistant); anything else is bookkeeping and a
+    # future new record type can never masquerade as a turn.
     $all = Get-TailLines $file 262144
     if ($all.Count -eq 0) { return 'unknown' }
-    # 40 lines, not 15: hook/attachment bookkeeping piles up after a kill
-    $tail = @($all | Select-Object -Last 40)
+    # 200 lines, not 40: sidechain turns + hook/attachment bookkeeping pile up after a kill
+    $tail = @($all | Select-Object -Last 200)
     for ($i = $tail.Count - 1; $i -ge 0; $i--) {
         $line = $tail[$i]
+        if ($line -match '"isSidechain"\s*:\s*true') { continue }   # subagent turn, not the conversation
         if ($line -match '"type"\s*:\s*"assistant"') {
             if (($line -match '"isApiErrorMessage"\s*:\s*true') -or
                 ($line -match '"error"\s*:\s*"rate_limit"')) { return 'limit' }
@@ -410,6 +417,29 @@ function Get-SessionTailState($file) {
         if ($line -match '"type"\s*:\s*"user"') { return 'stalled' }
     }
     'unknown'
+}
+
+function Resolve-FireGate($e) {
+    # THE eligibility rule, applied at the moment of fire - not at arm time,
+    # because hours pass in between and anyone may have driven the conversation
+    # since: the returning human, a finished leg whose bookkeeping crashed, or
+    # the CLI's own limit-picker auto-continue in the original window.
+    #   fire     -> tail is still the kill record (all-clear), or the task was
+    #               cut off mid-flight and is idle (the watch-stall path)
+    #   yield    -> a real turn landed minutes ago: someone is driving
+    #   finished -> ends with a completed reply that is NOT the kill: it was
+    #               finished without us - never fire into it
+    #   missing  -> transcript is gone (cleaned up?): nothing left to resume
+    #   skip     -> transcript unreadable right now: fail safe, retry next tick
+    $sf = Get-SessionFileById $e.session
+    if (-not $sf) { return 'missing' }
+    $sty = Get-SessionTailState $sf.FullName
+    if ($sty -eq 'limit') { return 'fire' }
+    $acty = Get-TranscriptActivity $sf.FullName
+    if ($acty -and (((Get-Date) - $acty).TotalMinutes -lt 10)) { return 'yield' }
+    if ($sty -eq 'finished') { return 'finished' }
+    if ($sty -eq 'stalled') { return 'fire' }
+    'skip'
 }
 
 # ---------- armed-entry state layer (one file per session) ----------
@@ -804,23 +834,33 @@ function Invoke-Probe {
     if ($proxy) { $env:HTTPS_PROXY = $proxy; $env:HTTP_PROXY = $proxy }
     $records = @()
     foreach ($e in $ready) {
-        # yield check: real turns newer than the stall mean someone (usually the
-        # returning human) is already driving this conversation - a headless leg
-        # would double-write it. A tail still ending at the limit record is the
-        # all-clear; anything else fresh means occupied, so fall back to
-        # watching instead of resuming (last time this raced, the user WAS the
-        # relay and got a useless double-driver).
-        $sfy = Get-SessionFileById $e.session
-        if ($sfy) {
-            $sty  = Get-SessionTailState $sfy.FullName
-            $acty = Get-TranscriptActivity $sfy.FullName
-            if (($sty -ne 'limit') -and $acty -and (((Get-Date) - $acty).TotalMinutes -lt 10)) {
-                $e | Add-Member -NotePropertyName mode -NotePropertyValue 'watch' -Force
-                Save-Entry $e
-                Write-Log @{ ev = 'leg-yield'; session = $e.session; to = 'watch' }
-                Send-Toast ('{0}: conversation is live again - watching instead of resuming' -f $e.session.Substring(0, 8))
-                continue
-            }
+        # fire-time gate: re-judge the transcript NOW, not at arm time. A leg
+        # into an occupied conversation double-writes it (last time this raced,
+        # the user WAS the relay and got a useless double-driver); a leg into a
+        # finished one burns quota appending noise to completed work.
+        $gate = Resolve-FireGate $e
+        if ($gate -eq 'yield') {
+            $e | Add-Member -NotePropertyName mode -NotePropertyValue 'watch' -Force
+            Save-Entry $e
+            Write-Log @{ ev = 'leg-yield'; session = $e.session; to = 'watch' }
+            Send-Toast ('{0}: conversation is live again - watching instead of resuming' -f $e.session.Substring(0, 8))
+            continue
+        }
+        if ($gate -eq 'finished') {
+            Complete-Entry $e $true ''
+            Write-Log @{ ev = 'fire-skip'; session = $e.session; reason = 'finished-by-others' }
+            Send-Toast ('{0}: conversation was already finished - standing down' -f $e.session.Substring(0, 8))
+            continue
+        }
+        if ($gate -eq 'missing') {
+            Complete-Entry $e $false ''
+            Write-Log @{ ev = 'fire-skip'; session = $e.session; reason = 'transcript-missing' }
+            Send-Toast ('{0}: transcript disappeared - relay cancelled' -f $e.session.Substring(0, 8))
+            continue
+        }
+        if ($gate -eq 'skip') {
+            Write-Log @{ ev = 'fire-skip'; session = $e.session; reason = 'transcript-unreadable' }
+            continue
         }
         $e.legs = [int]$e.legs + 1   # count BEFORE launching: crash cannot loop forever
         Save-Entry $e

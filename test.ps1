@@ -86,6 +86,11 @@ function Rec-Bookkeeping([string]$subtype, [string]$tsUtc) {
     if ($subtype -eq 'attachment') { return '{"type":"attachment","timestamp":"' + $tsUtc + '"}' }
     '{"type":"system","subtype":"' + $subtype + '","timestamp":"' + $tsUtc + '"}'
 }
+function Rec-Sidechain([string]$text, [string]$tsUtc) {
+    # a subagent turn: same file, same "assistant" type, but isSidechain:true -
+    # it is NOT part of the main conversation and must never decide the tail state
+    '{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"' + $text + '"}]},"timestamp":"' + $tsUtc + '"}'
+}
 
 Write-Host ''
 Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
@@ -319,6 +324,72 @@ Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
             (Rec-Assistant 'the usage limit resets at 3pm normally' '2026-07-26T01:00:05.000Z')
         )
         (Get-SessionTailState $f) -eq 'finished'
+    }
+    Test-Case 'a flood of subagent records after the kill cannot hide it' {
+        # parallel subagents drain after a kill: dozens of isSidechain assistant
+        # lines land on top of the kill record. Reading one of them as the tail
+        # flipped a limit-killed task to 'finished' (the 07-30 bug, sidechain
+        # variant) - the verdict must come from the MAIN chain only.
+        $lines = @(
+            (Rec-User 'go' '2026-07-26T01:00:00.000Z' $null),
+            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z')
+        )
+        foreach ($k in 1..60) { $lines += (Rec-Sidechain "subagent line $k" '2026-07-26T02:00:01.000Z') }
+        $f = New-Fixture 'tail-sidechain.jsonl' $lines
+        (Get-SessionTailState $f) -eq 'limit'
+    }
+    Test-Case 'a sidechain reply at the tail does not mask an unanswered user message' {
+        $f = New-Fixture 'tail-sidechain2.jsonl' @(
+            (Rec-Assistant 'earlier answer' '2026-07-26T01:00:00.000Z'),
+            (Rec-User 'now do this' '2026-07-26T02:00:00.000Z' $null),
+            (Rec-Sidechain 'subagent finishing up' '2026-07-26T02:00:01.000Z')
+        )
+        (Get-SessionTailState $f) -eq 'stalled'
+    }
+
+    Write-Host '-- relay: fire-time gate (re-judged at the moment of launch) --'
+    function Test-FireGateCase([string]$sid, [string[]]$lines) {
+        # Resolve-FireGate looks the session up under $env:USERPROFILE - point
+        # it at the fixture tree for the duration of one call
+        $prev = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = $Tmp
+            $bdir = Join-Path $Tmp '.claude\projects\clr-fg'
+            New-Item -ItemType Directory -Path $bdir -Force | Out-Null
+            if ($lines) { Set-Content -Path (Join-Path $bdir ($sid + '.jsonl')) -Value ($lines -join "`n") -Encoding UTF8 }
+            Resolve-FireGate ([pscustomobject]@{ session = $sid })
+        } finally { $env:USERPROFILE = $prev }
+    }
+    Test-Case 'gate: tail still the kill record -> fire' {
+        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000001' @(
+            (Rec-User 'go' '2026-07-26T01:00:00.000Z' $null),
+            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z')
+        )) -eq 'fire'
+    }
+    Test-Case 'gate: finished by someone else while we waited -> stand down, not fire' {
+        # the hole this closes: human (or the CLI limit-picker auto-continue)
+        # resumed and FINISHED the task hours ago - the old code fired anyway
+        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000002' @(
+            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z'),
+            (Rec-User 'picked it up myself' '2026-07-26T03:00:00.000Z' $null),
+            (Rec-Assistant 'all done' '2026-07-26T03:00:05.000Z')
+        )) -eq 'finished'
+    }
+    Test-Case 'gate: cut off mid-flight and long idle -> fire (watch-stall path)' {
+        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000003' @(
+            (Rec-Assistant 'earlier' '2026-07-26T01:00:00.000Z'),
+            (Rec-User 'unanswered' '2026-07-26T02:00:00.000Z' $null)
+        )) -eq 'fire'
+    }
+    Test-Case 'gate: a real turn minutes ago -> yield (someone is driving)' {
+        $freshTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000004' @(
+            (Rec-User 'still here' $freshTs $null),
+            (Rec-Assistant 'on it' $freshTs)
+        )) -eq 'yield'
+    }
+    Test-Case 'gate: transcript gone -> missing (relay cancelled, never fired blind)' {
+        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000005' @()) -eq 'missing'
     }
 
     Write-Host '-- relay: limit detection is CLI-phrase only --'
@@ -591,6 +662,20 @@ Test-Case 'panel page ships bilingual: string table, language toggle, persisted 
     ($h -match 'var I18N') -and ($h -match "id=`"btnLang`"") -and
         ($h -match 'clr_lang') -and ($h -match 'data-i18n=') -and
         ($h -match 'function t\(')
+}
+Test-Case 'both scheduled-task registrars keep -WakeToRun (sleep must not eat a fire)' {
+    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
+    $p = Get-Content (Join-Path $Repo 'preheat.ps1') -Raw -Encoding UTF8
+    ($r -match '-WakeToRun') -and ($p -match '-WakeToRun')
+}
+Test-Case 'the probe launch loop goes through the fire-time gate' {
+    # every leg launch must re-judge the transcript at the moment of fire;
+    # bypassing Resolve-FireGate reopens the fire-into-finished-work hole
+    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
+    ($r -match 'function Resolve-FireGate') -and
+        ($r -match '\$gate = Resolve-FireGate') -and
+        ($r -match "'finished-by-others'") -and
+        ($r -match '"isSidechain"')
 }
 Test-Case 'model-cap park path exists: no-fallback entries freeze instead of burning legs' {
     # quality-critical tasks may refuse the fallback hop - the entry must then
