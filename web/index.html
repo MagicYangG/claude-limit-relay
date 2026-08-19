@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
-<title>Claude-Limit-Relay</title>
+<title>Claude-Preheat</title>
 <style>
 /* ember(Gruvbox 暖琥珀)。所有色值收敛在这一处令牌表，规则里不写死颜色 */
 :root{
@@ -52,7 +52,6 @@ h1 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:v
   margin:0 0 4px; font-size:17px; font-weight:600; color:var(--fg2);
   display:flex; align-items:center; gap:10px; flex-wrap:wrap;
 }
-.card > h2 .tag{font-size:12px;font-weight:400;color:var(--dim);letter-spacing:.3px}
 .lead{color:var(--dim);font-size:13.5px;margin:0 0 18px}
 .hr{height:1px;background:var(--line);margin:20px 0 18px;border:0}
 
@@ -71,67 +70,19 @@ tr:last-child td{border-bottom:0}
   border-radius:10px; padding:14px 16px;
 }
 
-/* ---- session picker ---- */
-.slist{display:flex;flex-direction:column;gap:8px;margin-bottom:18px;max-height:330px;overflow-y:auto}
-.srow{
-  display:flex; gap:12px; align-items:flex-start; padding:11px 14px; cursor:pointer;
-  background:var(--panel2); border:1px solid var(--line); border-radius:11px; transition:border-color .15s,background .15s;
-}
-.srow:hover{border-color:var(--line2)}
-.srow.sel{border-color:var(--acc);background:var(--acc-bg)}
-.srow input{margin:4px 0 0;accent-color:var(--acc);flex:none;width:15px;height:15px}
-.srow .sbody{min-width:0;flex:1}
-.srow .l1{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-.srow .sid{font-family:var(--mono);font-size:13px;color:var(--acc)}
-.srow .scwd{font-family:var(--mono);font-size:12.5px;color:var(--dim);word-break:break-all}
-.srow .ssnip{font-size:13px;color:var(--fg);opacity:.82;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.srow .stime{font-size:12px;color:var(--dim2);margin-top:2px}
-
 /* ---- buttons ---- */
 .btns{display:flex;gap:14px;flex-wrap:wrap}
-.act{flex:1;min-width:250px}
 button{font:inherit;cursor:pointer;border-radius:11px;transition:background .15s,border-color .15s,opacity .15s}
 button:disabled{opacity:.45;cursor:not-allowed}
-.big{
-  width:100%; padding:15px 18px; font-size:15.5px; font-weight:600; text-align:center;
-  background:var(--panel2); color:var(--fg2); border:1px solid var(--line2);
-}
-.big:hover:not(:disabled){background:var(--hov)}
-.big.primary{background:var(--acc-bg);border-color:var(--acc-b);color:var(--accfg)}
-.big.primary:hover:not(:disabled){background:var(--acc-bg2);border-color:var(--acc)}
-.big.go{background:var(--ok-bg);border-color:var(--ok-b);color:var(--ok)}
-.big.go:hover:not(:disabled){background:var(--ok-bg2);border-color:var(--ok)}
 .hint{font-size:12.5px;color:var(--dim);margin:8px 2px 0;line-height:1.55}
 .mini{
   padding:6px 13px;font-size:13px;background:transparent;color:var(--dim);
   border:1px solid var(--line2);
 }
 .mini:hover:not(:disabled){color:var(--fg2);border-color:var(--dim)}
-.mini.warn:hover:not(:disabled){color:var(--bad);border-color:var(--bad-b)}
 .mini.on{color:var(--ok);border-color:var(--ok-b)}
 .mini.on:hover:not(:disabled){background:var(--ok-bg);color:var(--ok2)}
 
-/* ---- armed / done rows ---- */
-.lrow{
-  display:flex;gap:12px;align-items:center;flex-wrap:wrap;
-  padding:11px 14px;background:var(--panel2);border:1px solid var(--line);
-  border-radius:11px;margin-bottom:8px;
-}
-.lrow .lbody{flex:1;min-width:180px}
-.lrow .lid{font-family:var(--mono);font-size:13px;color:var(--fg2)}
-.lrow .lsnip{font-size:13px;color:var(--fg);opacity:.82;margin-top:3px;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
-.lrow .lcwd{font-family:var(--mono);font-size:12.5px;color:var(--dim);word-break:break-all}
-.badge{
-  display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:20px;
-  border:1px solid var(--line2);color:var(--dim);margin-left:8px;vertical-align:1px;
-}
-.badge.amber{color:var(--accfg);border-color:var(--acc-b);background:var(--acc-bg)}
-.badge.green{color:var(--ok);border-color:var(--ok-b);background:var(--ok-bg)}
-.badge.red{color:var(--bad);border-color:var(--bad-b);background:var(--bad-bg)}
-.badge select{background:transparent;border:0;color:inherit;font:inherit;font-size:11.5px;padding:0;cursor:pointer}
-.badge select:focus{outline:none}
-.badge option{background:var(--panel2);color:var(--fg)}
 .rowhead{display:flex;align-items:center;gap:12px;margin:0 0 10px}
 .rowhead .t{font-size:13px;color:var(--dim);flex:1}
 
@@ -188,8 +139,6 @@ select{
   border:1px solid var(--line2);border-radius:9px;padding:6px 9px;
 }
 .lbl{font-size:13px;color:var(--dim)}
-.once{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:9px}
-.once .lbl{min-width:118px}
 
 /* ---- toast ---- */
 #toasts{position:fixed;right:20px;bottom:20px;z-index:50;display:flex;flex-direction:column;gap:10px;max-width:min(420px,calc(100vw - 40px))}
@@ -214,7 +163,6 @@ select{
 @media (max-width:560px){
   .wrap{padding:0 14px}
   .card{padding-left:16px;padding-right:16px}
-  .act{min-width:100%}
   .wcol{padding:7px 3px 5px}
   .tchip{font-size:11px;padding:2px 3px 2px 5px}
   .ogrid{grid-template-columns:1fr}
@@ -228,7 +176,7 @@ select{
 <div class="wrap">
 
 <header>
-  <h1><span class="dot"></span>Claude-Limit-Relay <span data-i18n="desk"></span></h1>
+  <h1><span class="dot"></span>Claude-Preheat <span data-i18n="desk"></span></h1>
   <div class="hright">
     <span class="stamp" id="stamp"></span>
     <button class="mini" id="btnLang"></button>
@@ -269,60 +217,6 @@ select{
   </div>
 </section>
 
-<!-- 2. relay -->
-<section class="card">
-  <h2 data-i18n="relay_h2"></h2>
-  <p class="lead" data-i18n="relay_lead"></p>
-  <div id="sessions"></div>
-  <div class="btns">
-    <div class="act">
-      <button class="big" id="btnWatch" data-i18n="btn_watch"></button>
-      <p class="hint" data-i18n="watch_hint"></p>
-    </div>
-    <div class="act">
-      <button class="big" id="btnArm" data-i18n="btn_arm"></button>
-      <p class="hint" data-i18n="arm_hint"></p>
-    </div>
-  </div>
-  <div class="once" style="margin-top:16px">
-    <span class="lbl" data-i18n="maxlegs_lbl"></span>
-    <select id="maxLegs">
-      <option value="1" data-i18n="leg1"></option>
-      <option value="2" data-i18n="leg2"></option>
-      <option value="3" selected data-i18n="leg3"></option>
-      <option value="4" data-i18n="leg4"></option>
-      <option value="5" data-i18n="leg5"></option>
-    </select>
-    <span class="hint" style="margin:0" data-i18n="legs_hint"></span>
-  </div>
-  <div class="once">
-    <span class="lbl" data-i18n="fb_lbl"></span>
-    <select id="fbMode">
-      <option value="" selected data-i18n="fb_opus"></option>
-      <option value="none" data-i18n="fb_none"></option>
-    </select>
-    <span class="hint" style="margin:0" data-i18n="fb_hint"></span>
-  </div>
-  <hr class="hr">
-  <div class="rowhead">
-    <div class="t" data-i18n="queue"></div>
-    <button class="mini warn" id="btnDisarmAll" data-i18n="cancel_all"></button>
-  </div>
-  <div id="armed"></div>
-</section>
-
-<!-- 3. takeover -->
-<section class="card">
-  <h2 data-i18n="take_h2"></h2>
-  <p class="lead" data-i18n="take_lead"></p>
-  <div class="rowhead">
-    <div class="t" data-i18n="take_done"></div>
-    <button class="mini on" id="btnTakeAll" data-i18n="take_all"></button>
-    <button class="mini warn" id="btnClearDone" data-i18n="clear_list"></button>
-  </div>
-  <div id="done"></div>
-</section>
-
 </div>
 
 <div id="toasts"></div>
@@ -335,7 +229,7 @@ select{
 var LANG = (function(){ try { return localStorage.getItem('clr_lang') === 'en' ? 'en' : 'zh'; } catch(e){ return 'zh'; } })();
 var I18N = {
   zh: {
-    title:'Claude-Limit-Relay 控制台', desk:'控制台', refresh:'刷新', loading:'加载中…',
+    title:'Claude-Preheat 控制台', desk:'控制台', refresh:'刷新',
     offline:'后端没连上 —— 请运行 <span class="mono">claude-panel</span>（或 <span class="mono">./panel.ps1</span>），然后刷新本页（页面每分钟会自己重试）。',
     sched_h2:'额度窗口预热',
     sched_lead:'填<b>希望窗口重置的时刻</b>，预热时刻自动 = 该时刻减 5 小时。',
@@ -343,41 +237,22 @@ var I18N = {
     sched_apply:'保存并应用', sched_once:'临时预热诉求', sched_once_hint:'只生效一次',
     once_reset_lbl:'让窗口重置于', once_at_lbl:'就在这个点预热', once_plus_lbl:'几小时之后预热',
     hours:'小时', schedule_btn:'排定',
-    relay_h2:'跨额度任务排布', relay_lead:'选一个对话挂上，撞限后自动等窗口重开、在原对话上续跑。',
-    btn_watch:'还没撞限 · 站岗', watch_hint:'只读对话记录：撞限被掐就转入续跑，正常跑完自动撤下。',
-    btn_arm:'已经撞限 · 排上', arm_hint:'窗口一重开立刻续跑。',
-    maxlegs_lbl:'最多接力次数', leg1:'1 次', leg2:'2 次', leg3:'3 次（推荐）', leg4:'4 次', leg5:'5 次',
-    legs_hint:'每次接力占用一个新窗口。',
-    fb_lbl:'撞到模型周限时', fb_opus:'换 opus 跑完（推荐）', fb_none:'不换模型 · 停下等我',
-    fb_hint:'5 小时窗口开着、这个模型自己的周限却见底时怎么办。',
-    queue:'任务队列', cancel_all:'全部取消',
-    take_h2:'跨额度任务窗口接续', take_lead:'接管 = 开一个终端标签页，回到原目录、挂载原对话继续。',
-    take_done:'已结束的接力', take_all:'全部接管', clear_list:'清空列表',
     ago_now:'刚刚', ago_min:'{n} 分钟前', ago_hr:'{n} 小时前', ago_day:'{n} 天前',
-    unknown_dir:'（未知目录）', toast_done:'已完成', toast_err:'出错了',
+    toast_done:'已完成', toast_err:'出错了',
     reset_word:'重置', once_task:'一次性预热', no_tasks:'还没排定预热。',
-    th_scheduled:'排定', th_next:'下次预热', no_sessions:'没找到最近的对话。', last_activity:'最后活动',
-    badge_watch:'站岗中', badge_parked:'已停下 · 模型周限',
-    badge_parked_title:'模型周限耗尽且选了不换模型。接管后自行决定，或取消排布。',
-    badge_waiting:'等窗口重开', badge_running:'正在续跑', legs_label:'已接力', legs_title:'改接力上限，立即生效',
-    take:'接管', cancel:'取消', remove:'移除', queue_empty:'队列是空的。',
-    confirm_take:'这个对话几分钟前还有往来，原窗口可能还开着。\n再开一个交互窗口会双写同一份对话，确定接管？',
-    done_ok:'✅ 完成', done_fail:'⚠️ 没跑完', no_done:'还没有已结束的接力。',
-    last_reply:'最后回复：',
+    th_scheduled:'排定', th_next:'下次预热',
     rl_5h:'5 小时窗口', rl_wk:'周额度', rl_reset:'重置 ', rl_src:'来自 statusline 缓存 · ',
     learn_waste:'过去 7 天开了 {n} 个窗口，窗口时间利用率 {p}%（估算）· 终端跑 preheat learn 可按作息生成预热排期',
     schednote_derived:'这张表由已注册任务反推（预热时刻 + 5 小时 = 重置时刻）。',
     stamp_updated:'更新于 ', stamp_lost:'连接中断，重试中…',
     chip_edit_title:'点击修改', chip_del_title:'删除', wadd_title:'加一个重置时刻',
-    m_cancelled:'已取消', m_opened_tab:'已在新标签页打开', m_removed:'已移除', m_all_cancelled:'已全部取消',
-    m_all_opened:'已全部打开', m_cleared:'已清空', m_saved:'已保存并生效', m_scheduled:'已排定',
-    m_guarding:'已开始站岗', m_queued:'已排上', m_unqueued_tab:'已取消排布并在新标签页打开',
+    m_saved:'已保存并生效', m_scheduled:'已排定',
     op_failed:'操作失败', not_json:'后端返回的不是 JSON', no_backend:'没连上后端：',
-    pick_first:'先在上面选一个对话', no_times:'一个时刻都没有；想全部清掉请用命令行 preheat off',
+    no_times:'一个时刻都没有；想全部清掉请用命令行 preheat off',
     bad_hours:'小时数填个 1 以上的整数', bad_time:'时刻格式要是 HH:mm', langBtn:'EN'
   },
   en: {
-    title:'Claude-Limit-Relay Control Desk', desk:'Control Desk', refresh:'Refresh', loading:'Loading…',
+    title:'Claude-Preheat Control Desk', desk:'Control Desk', refresh:'Refresh',
     offline:'Backend not connected — run <span class="mono">claude-panel</span> (or <span class="mono">./panel.ps1</span>), then refresh this page (it retries every minute).',
     sched_h2:'Usage-window preheat',
     sched_lead:'Enter <b>the time you want the window to reset</b>; the fire time is automatically that minus 5 hours.',
@@ -385,37 +260,18 @@ var I18N = {
     sched_apply:'Save & apply', sched_once:'One-shot preheat', sched_once_hint:'Fires once',
     once_reset_lbl:'Reset the window at', once_at_lbl:'Fire at this time', once_plus_lbl:'Fire N hours from now',
     hours:'hours', schedule_btn:'Schedule',
-    relay_h2:'Cross-window task relay', relay_lead:'Pick a conversation; on a limit hit it waits for the window to reopen and resumes in the same conversation.',
-    btn_watch:'Not limited yet · stand guard', watch_hint:'Reads the transcript only: switches to resume if the limit kills it, stands down on a normal finish.',
-    btn_arm:'Already limited · queue', arm_hint:'Resumes the moment the window reopens.',
-    maxlegs_lbl:'Max relay legs', leg1:'1', leg2:'2', leg3:'3 (recommended)', leg4:'4', leg5:'5',
-    legs_hint:'Each leg uses one more window.',
-    fb_lbl:'On a model weekly cap', fb_opus:'Hop to opus (recommended)', fb_none:'Keep model · stop and wait',
-    fb_hint:'What to do when the 5h window is open but this model’s own weekly cap is spent.',
-    queue:'Queue', cancel_all:'Cancel all',
-    take_h2:'Takeover', take_lead:'Takeover opens a terminal tab back in the original directory and mounts the conversation to continue.',
-    take_done:'Finished relays', take_all:'Take over all', clear_list:'Clear list',
     ago_now:'just now', ago_min:'{n} min ago', ago_hr:'{n} h ago', ago_day:'{n} d ago',
-    unknown_dir:'(unknown dir)', toast_done:'Done', toast_err:'Something went wrong',
+    toast_done:'Done', toast_err:'Something went wrong',
     reset_word:'reset', once_task:'One-shot preheat', no_tasks:'No preheats scheduled yet.',
-    th_scheduled:'Scheduled', th_next:'Next fire', no_sessions:'No recent conversations found.', last_activity:'Last activity',
-    badge_watch:'On guard', badge_parked:'Stopped · model cap',
-    badge_parked_title:'Model weekly cap spent and you chose not to switch. Take over to decide, or cancel.',
-    badge_waiting:'Waiting for reset', badge_running:'Resuming', legs_label:'Legs', legs_title:'Change leg cap, applies immediately',
-    take:'Take over', cancel:'Cancel', remove:'Remove', queue_empty:'Queue is empty.',
-    confirm_take:'This conversation had activity minutes ago; its original window may still be open.\nOpening a second interactive window double-writes the same conversation. Take over anyway?',
-    done_ok:'✅ Done', done_fail:'⚠️ Unfinished', no_done:'No finished relays yet.',
-    last_reply:'Last reply: ',
+    th_scheduled:'Scheduled', th_next:'Next fire',
     rl_5h:'5-hour window', rl_wk:'Weekly', rl_reset:'resets ', rl_src:'from statusline cache · ',
     learn_waste:'Last 7 days: {n} windows opened, {p}% of window time engaged (estimate) · run preheat learn to derive a schedule from your rhythm',
     schednote_derived:'This table is inferred from registered tasks (fire time + 5h = reset time).',
     stamp_updated:'Updated ', stamp_lost:'Connection lost, retrying…',
     chip_edit_title:'Click to edit', chip_del_title:'Delete', wadd_title:'Add a reset time',
-    m_cancelled:'Cancelled', m_opened_tab:'Opened in a new tab', m_removed:'Removed', m_all_cancelled:'All cancelled',
-    m_all_opened:'All opened', m_cleared:'Cleared', m_saved:'Saved & applied', m_scheduled:'Scheduled',
-    m_guarding:'Standing guard', m_queued:'Queued', m_unqueued_tab:'Unqueued and opened in a new tab',
+    m_saved:'Saved & applied', m_scheduled:'Scheduled',
     op_failed:'Operation failed', not_json:'Backend did not return JSON', no_backend:'Backend not reachable: ',
-    pick_first:'Pick a conversation above first', no_times:'No times set; to clear everything use preheat off on the command line',
+    no_times:'No times set; to clear everything use preheat off on the command line',
     bad_hours:'Enter a whole number of hours ≥ 1', bad_time:'Time must be HH:mm', langBtn:'中文'
   }
 };
@@ -424,7 +280,7 @@ function t(k){ var d = I18N[LANG] || I18N.zh; return (k in d) ? d[k] : (I18N.zh[
 var DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 var DAYCN = {Mon:'一',Tue:'二',Wed:'三',Thu:'四',Fri:'五',Sat:'六',Sun:'日'};
 function dayShort(d){ return LANG === 'en' ? d : DAYCN[d]; }
-var state = { status:null, sessions:[], pick:null, sesKey:'', busy:false, stamp:null, schedLoaded:false, rl:null, learn:null };
+var state = { status:null, busy:false, stamp:null, schedLoaded:false, rl:null, learn:null };
 
 /* ---------- utils ---------- */
 function $(id){ return document.getElementById(id); }
@@ -460,11 +316,6 @@ function ago(v){
   if (s < 86400) return t('ago_hr').replace('{n}', Math.floor(s/3600));
   return t('ago_day').replace('{n}', Math.floor(s/86400));
 }
-function tail(p, n){
-  if (!p) return t('unknown_dir');
-  var parts = String(p).replace(/[\\\/]+$/,'').split(/[\\\/]/);
-  return parts.slice(Math.max(0, parts.length - (n||2))).join('\\');
-}
 function toast(ok, msg){
   var box = $('toasts');
   var el = document.createElement('div');
@@ -499,7 +350,7 @@ function act(path, body, okMsg){
   return postJSON(path, body).then(function(res){
     var ok = !!(res && res.ok);
     toast(ok, (res && res.message) ? res.message : (ok ? okMsg : t('op_failed')));
-    return refreshStatus().then(refreshSessions).then(function(){ return ok; });
+    return refreshStatus().then(function(){ return ok; });
   }).catch(function(e){
     setOnline(false); toast(false, t('no_backend') + e.message);
     return false;
@@ -549,141 +400,6 @@ function renderTasks(){
     }).join('');
     $('tasks').innerHTML = '<table><thead><tr><th>' + t('th_scheduled') + '</th><th style="width:130px">' + t('th_next') + '</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
-}
-
-/* ---------- 2. sessions + armed ---------- */
-function renderSessions(){
-  var list = state.sessions || [];
-  var box = $('sessions');
-  if (!list.length) {
-    box.innerHTML = '<div class="empty" style="margin-bottom:18px">' + t('no_sessions') + '</div>';
-    return;
-  }
-  if (!state.pick || !list.some(function(s){ return s.session === state.pick; })) {
-    state.pick = list[0].session;
-  }
-  var html = '<div class="slist">';
-  list.forEach(function(s){
-    var sel = (s.session === state.pick);
-    html +=
-      '<label class="srow' + (sel ? ' sel' : '') + '" data-sid="' + esc(s.session) + '">' +
-        '<input type="radio" name="sess" value="' + esc(s.session) + '"' + (sel ? ' checked' : '') + '>' +
-        '<div class="sbody">' +
-          '<div class="l1"><span class="sid">' + esc(String(s.session).slice(0,8)) + '</span>' +
-            '<span class="scwd">' + esc(tail(s.cwd, 2)) + '</span></div>' +
-          (s.snippet ? '<div class="ssnip">' + esc(s.snippet) + '</div>' : '') +
-          '<div class="stime">' + t('last_activity') + ' ' + esc(fmtDT(s.mtime)) + '　' + esc(ago(s.mtime)) + '</div>' +
-        '</div>' +
-      '</label>';
-  });
-  html += '</div>';
-  box.innerHTML = html;
-  var rows = box.querySelectorAll('.srow');
-  for (var i = 0; i < rows.length; i++) {
-    rows[i].addEventListener('click', function(){
-      state.pick = this.getAttribute('data-sid');
-      var all = box.querySelectorAll('.srow');
-      for (var j = 0; j < all.length; j++) {
-        var on = all[j].getAttribute('data-sid') === state.pick;
-        all[j].className = 'srow' + (on ? ' sel' : '');
-        all[j].querySelector('input').checked = on;
-      }
-    });
-  }
-}
-
-function renderArmed(){
-  var rel = (state.status && state.status.relay) ? state.status.relay : {};
-  var arr = rel.armed || [];
-  var box = $('armed');
-  $('btnDisarmAll').style.display = arr.length ? '' : 'none';
-  if (!arr.length) {
-    box.innerHTML = '<div class="empty">' + t('queue_empty') + '</div>';
-    return;
-  }
-  box.innerHTML = arr.map(function(a){
-    var mode = (a.mode === 'watch')
-      ? '<span class="badge amber">' + t('badge_watch') + '</span>'
-      : (a.mode === 'parked')
-        ? '<span class="badge red" title="' + esc(t('badge_parked_title')) + '">' + t('badge_parked') + '</span>'
-        : '<span class="badge green">' + t('badge_waiting') + '</span>';
-    var run = a.running ? '<span class="badge amber">' + t('badge_running') + '</span>' : '';
-    var opts = '';
-    for (var n = 1; n <= 5; n++) {
-      opts += '<option value="' + n + '"' + (n === (a.maxLegs|0) ? ' selected' : '') + '>' + n + '</option>';
-    }
-    if ((a.maxLegs|0) > 5) opts += '<option value="' + (a.maxLegs|0) + '" selected>' + (a.maxLegs|0) + '</option>';
-    var legs = '<span class="badge">' + t('legs_label') + ' ' + esc(a.legs) + ' / ' +
-      '<select data-legs="' + esc(a.session) + '" title="' + esc(t('legs_title')) + '">' + opts + '</select></span>';
-    return '<div class="lrow">' +
-      '<div class="lbody">' +
-        '<div><span class="lid">' + esc(String(a.session).slice(0,8)) + '</span>' + mode + legs + run + '</div>' +
-        (a.snippet ? '<div class="lsnip">' + esc(a.snippet) + '</div>' : '') +
-        '<div class="lcwd">' + esc(a.cwd || '') + '</div>' +
-      '</div>' +
-      '<button class="mini on" data-take="' + esc(a.session) + '">' + t('take') + '</button>' +
-      '<button class="mini warn" data-disarm="' + esc(a.session) + '">' + t('cancel') + '</button>' +
-    '</div>';
-  }).join('');
-  bindAll(box, 'data-disarm', function(sid){
-    act('/api/relay/disarm', { session: sid }, t('m_cancelled'));
-  });
-  // taking over an armed session cancels it first (relay.ps1 disarms, killing
-  // any in-flight leg) so the new TUI is the only writer; if the transcript
-  // moved within the last 5 min the ORIGINAL window is probably still open -
-  // confirm before opening a second one onto the same conversation
-  bindAll(box, 'data-take', function(sid){
-    var a = null;
-    for (var i = 0; i < arr.length; i++) if (arr[i].session === sid) a = arr[i];
-    if (a && a.activity) {
-      var d = parseDate(a.activity);
-      if (d && (Date.now() - d.getTime()) < 5 * 60000) {
-        if (!confirm(t('confirm_take'))) return;
-      }
-    }
-    act('/api/relay/takeover', { session: sid }, t('m_unqueued_tab'));
-  });
-  var sels = box.querySelectorAll('[data-legs]');
-  for (var si = 0; si < sels.length; si++) {
-    sels[si].addEventListener('click', function(ev){ ev.stopPropagation(); });
-    sels[si].addEventListener('change', function(ev){
-      ev.stopPropagation();
-      act('/api/relay/legs', { session: this.getAttribute('data-legs'), maxLegs: parseInt(this.value, 10) }, t('m_saved'));
-    });
-  }
-}
-
-/* ---------- 3. done ---------- */
-function renderDone(){
-  var rel = (state.status && state.status.relay) ? state.status.relay : {};
-  var arr = rel.done || [];
-  var box = $('done');
-  $('btnTakeAll').style.display = arr.length ? '' : 'none';
-  $('btnClearDone').style.display = arr.length ? '' : 'none';
-  if (!arr.length) {
-    box.innerHTML = '<div class="empty">' + t('no_done') + '</div>';
-    return;
-  }
-  box.innerHTML = arr.map(function(d){
-    var b = d.ok ? '<span class="badge green">' + t('done_ok') + '</span>' : '<span class="badge red">' + t('done_fail') + '</span>';
-    var tm = d.finishedAt ? '<span class="badge">' + esc(fmtDT(d.finishedAt)) + '</span>' : '';
-    return '<div class="lrow">' +
-      '<div class="lbody">' +
-        '<div><span class="lid">' + esc(String(d.session).slice(0,8)) + '</span>' + b + tm + '</div>' +
-        (d.snippet ? '<div class="lsnip">' + esc(d.snippet) + '</div>' : '') +
-        (d.summary ? '<div class="lsnip">' + t('last_reply') + esc(d.summary) + '</div>' : '') +
-        '<div class="lcwd">' + esc(d.cwd || '') + '</div>' +
-      '</div>' +
-      '<button class="mini on" data-take="' + esc(d.session) + '">' + t('take') + '</button>' +
-      '<button class="mini warn" data-dismiss="' + esc(d.session) + '">' + t('remove') + '</button>' +
-    '</div>';
-  }).join('');
-  bindAll(box, 'data-take', function(sid){
-    act('/api/relay/takeover', { session: sid }, t('m_opened_tab'));
-  });
-  bindAll(box, 'data-dismiss', function(sid){
-    act('/api/relay/dismiss', { session: sid }, t('m_removed'));
-  });
 }
 
 function bindAll(box, attr, fn){
@@ -895,19 +611,11 @@ function refreshStatus(){
   refreshRateLimits();
   return getJSON('/api/status').then(function(s){
     state.status = s; state.stamp = new Date(); setOnline(true);
-    renderTasks(); renderArmed(); renderDone(); seedSchedule(); tickStamp();
+    renderTasks(); seedSchedule(); tickStamp();
   }).catch(function(){
     setOnline(false);
     $('stamp').textContent = t('stamp_lost');
   });
-}
-function refreshSessions(){
-  return getJSON('/api/sessions').then(function(list){
-    state.sessions = Array.isArray(list) ? list : [];
-    var key = state.sessions.map(function(s){ return s.session + '|' + s.mtime; }).join(',');
-    if (key !== state.sesKey) { state.sesKey = key; renderSessions(); }
-    setOnline(true);
-  }).catch(function(){ setOnline(false); });
 }
 function tickStamp(){
   if (!state.stamp) return;
@@ -928,8 +636,8 @@ function applyStatic(){
   $('btnLang').textContent = t('langBtn');
 }
 function rerenderDynamic(){
-  renderWeek(); renderSessions();
-  renderTasks(); renderArmed(); renderDone(); renderRateLimits(); renderLearn();
+  renderWeek();
+  renderTasks(); renderRateLimits(); renderLearn();
   if (state.status && state.status.preheat) {
     var ig = state.status.preheat;
     var rules = rulesFromTasks(ig.tasks);
@@ -946,22 +654,7 @@ function setLang(lang){
 
 /* ---------- wiring ---------- */
 $('btnLang').addEventListener('click', function(){ setLang(LANG === 'en' ? 'zh' : 'en'); });
-$('btnRefresh').addEventListener('click', function(){ refreshStatus(); refreshSessions(); });
-$('btnWatch').addEventListener('click', function(){ doArm(true); });
-$('btnArm').addEventListener('click', function(){ doArm(false); });
-function doArm(watch){
-  if (!state.pick) { toast(false, t('pick_first')); return; }
-  var payload = {
-    session: state.pick,
-    watch: !!watch,
-    maxLegs: parseInt($('maxLegs').value, 10) || 3
-  };
-  if ($('fbMode').value) payload.fallback = $('fbMode').value;
-  act('/api/relay/arm', payload, watch ? t('m_guarding') : t('m_queued'));
-}
-$('btnDisarmAll').addEventListener('click', function(){ act('/api/relay/disarm', {}, t('m_all_cancelled')); });
-$('btnTakeAll').addEventListener('click', function(){ act('/api/relay/takeover', { all:true }, t('m_all_opened')); });
-$('btnClearDone').addEventListener('click', function(){ act('/api/relay/dismiss', { all:true }, t('m_cleared')); });
+$('btnRefresh').addEventListener('click', function(){ refreshStatus(); });
 $('btnApply').addEventListener('click', function(){
   var rules = collectRules();
   if (!rules.length) { toast(false, t('no_times')); return; }
@@ -991,10 +684,8 @@ for (var k = 0; k < onceBtns.length; k++) {
 applyStatic();
 renderWeek();
 refreshStatus();
-refreshSessions();
 refreshLearn();
 setInterval(refreshStatus, 60000);
-setInterval(refreshSessions, 300000);
 setInterval(refreshLearn, 600000);
 setInterval(tickStamp, 30000);
 

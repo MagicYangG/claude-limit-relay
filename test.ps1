@@ -1,13 +1,13 @@
 ﻿#Requires -Version 5.1
 <#
-claude-limit-relay self-test.
+claude-preheat self-test: preheat scheduling, the local panel, the statusline tap.
 
 Run:  ./test.ps1            (add -Verbose for per-case detail)
 Exit: 0 = all passed, 1 = at least one failure.
 
 Costs nothing and touches nothing that matters:
   - no `claude` call, so zero quota and no usage window is anchored
-  - schedule.json, the real journals and the registered scheduled tasks are
+  - schedule.json, the real journal and the registered scheduled tasks are
     never written; the panel is started on a spare port and killed again
   - all fixtures live under a temp directory that is removed at the end
 
@@ -57,47 +57,26 @@ function New-Fixture([string]$name, [string[]]$lines) {
 
 # record builders that mirror the real transcript shapes
 function Rec-User([string]$text, [string]$tsUtc, [string]$cwd) {
-    # a plainly typed message stores content as a STRING, not as text items -
-    # the shape that made the snippet regex blind for a whole day
+    # a plainly typed message stores content as a STRING, not as text items
     $c = '{"type":"user","message":{"role":"user","content":"' + $text + '"},"timestamp":"' + $tsUtc + '"'
     if ($cwd) { $c += ',"cwd":"' + $cwd + '"' }
     $c + '}'
 }
-function Rec-UserItems([string]$text, [string]$tsUtc) {
-    '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"' + $text + '"}]},"timestamp":"' + $tsUtc + '"}'
-}
-function Rec-ToolResult([string]$text, [string]$tsUtc) {
-    '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"' + $text + '"}]},"timestamp":"' + $tsUtc + '"}'
-}
 function Rec-Assistant([string]$text, [string]$tsUtc) {
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"' + $text + '"}]},"timestamp":"' + $tsUtc + '"}'
-}
-function Rec-AssistantToolUse([string]$tsUtc) {
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{}}]},"timestamp":"' + $tsUtc + '"}'
-}
-function Rec-AssistantLimit([string]$tsUtc) {
-    # the REAL shape of a limit kill (captured live 07-30): an assistant record
-    # whose text reads like a normal completed reply - only the structured
-    # error fields give it away
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"You''ve hit your session limit · resets 1:40pm (America/Los_Angeles)"}]},"error":"rate_limit","isApiErrorMessage":true,"timestamp":"' + $tsUtc + '"}'
 }
 function Rec-Bookkeeping([string]$subtype, [string]$tsUtc) {
     # Claude Code appends these to an OPEN-BUT-IDLE session: no API call happened
     if ($subtype -eq 'attachment') { return '{"type":"attachment","timestamp":"' + $tsUtc + '"}' }
     '{"type":"system","subtype":"' + $subtype + '","timestamp":"' + $tsUtc + '"}'
 }
-function Rec-Sidechain([string]$text, [string]$tsUtc) {
-    # a subagent turn: same file, same "assistant" type, but isSidechain:true -
-    # it is NOT part of the main conversation and must never decide the tail state
-    '{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"' + $text + '"}]},"timestamp":"' + $tsUtc + '"}'
-}
 
 Write-Host ''
-Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
+Write-Host '=== claude-preheat self-test ===' -ForegroundColor Cyan
 
 # ---------------------------------------------------------------- preheat.ps1
-# dot-source inside its own scope so relay's identically-named helpers cannot
-# shadow these; '__selftest__' falls through to the usage branch
+# dot-source inside its own scope so its helpers stay out of the top scope;
+# '__selftest__' falls through to the usage branch
 & {
     . (Join-Path $Repo 'preheat.ps1') '__selftest__' 6>$null | Out-Null
     Write-Host ''
@@ -253,423 +232,6 @@ Write-Host '=== claude-limit-relay self-test ===' -ForegroundColor Cyan
     }
 }
 
-# ------------------------------------------------------------------ relay.ps1
-& {
-    . (Join-Path $Repo 'relay.ps1') '__selftest__' 6>$null | Out-Null
-    Write-Host ''
-    Write-Host '-- relay: session snippet (what the picker shows) --'
-
-    Test-Case 'a plainly typed message (content as a STRING) is found' {
-        # regression: the regex only looked for "text" items and was blind to
-        # every hand-typed message for a whole day
-        $f = New-Fixture 'snip-plain.jsonl' @((Rec-User 'kkk' '2026-07-26T01:00:00.000Z' $null))
-        (Get-SessionSnippet $f) -eq 'kkk'
-    }
-    Test-Case 'a message stored as text items is also found' {
-        $f = New-Fixture 'snip-items.jsonl' @((Rec-UserItems 'from items' '2026-07-26T01:00:00.000Z'))
-        (Get-SessionSnippet $f) -eq 'from items'
-    }
-    Test-Case 'the NEWEST real message wins' {
-        $f = New-Fixture 'snip-newest.jsonl' @(
-            (Rec-User 'older' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-Assistant 'reply' '2026-07-26T01:00:05.000Z'),
-            (Rec-User 'newer' '2026-07-26T02:00:00.000Z' $null)
-        )
-        (Get-SessionSnippet $f) -eq 'newer'
-    }
-    Test-Case 'tool results are never used as the snippet' {
-        $f = New-Fixture 'snip-tool.jsonl' @(
-            (Rec-User 'real question' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-ToolResult 'exit code 0 blah' '2026-07-26T02:00:00.000Z')
-        )
-        (Get-SessionSnippet $f) -eq 'real question'
-    }
-    Test-Case 'slash-command dumps and caveats lose to a real message' {
-        $f = New-Fixture 'snip-meta.jsonl' @(
-            (Rec-User 'my actual ask' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-User '# /loop - schedule a recurring prompt' '2026-07-26T02:00:00.000Z' $null),
-            (Rec-User 'Caveat: the messages below were generated' '2026-07-26T02:00:01.000Z' $null)
-        )
-        (Get-SessionSnippet $f) -eq 'my actual ask'
-    }
-    Test-Case 'when only meta lines exist, a meta line is better than nothing' {
-        $f = New-Fixture 'snip-onlymeta.jsonl' @((Rec-User '# /loop - schedule a recurring prompt' '2026-07-26T01:00:00.000Z' $null))
-        (Get-SessionSnippet $f).Length -gt 0
-    }
-
-    Write-Host '-- relay: transcript cwd --'
-    Test-Case 'cwd is extracted and un-escaped' {
-        # JSON-escaped path, exactly as a transcript stores it
-        $f = New-Fixture 'cwd.jsonl' @((Rec-User 'x' '2026-07-26T01:00:00.000Z' 'C:\\Users\\me\\proj'))
-        (Get-SessionCwd $f) -eq 'C:\Users\me\proj'
-    }
-
-    Test-Case 'cwd candidates are verified against the transcript bucket' {
-        # regression: a session that cd'd mid-way stored the LAST cwd, whose
-        # bucket differs from where the transcript lives -> takeover and every
-        # relay leg died with "No conversation found"
-        $bucketDir = Join-Path $Tmp 'C--x-y'
-        New-Item -ItemType Directory -Path $bucketDir -Force | Out-Null
-        $p = Join-Path $bucketDir 'b.jsonl'
-        Set-Content -Path $p -Value (@(
-            (Rec-User 'start' '2026-07-26T01:00:00.000Z' 'C:\\x\\y'),
-            (Rec-User 'later' '2026-07-26T02:00:00.000Z' 'C:\\x\\y\\sub')
-        ) -join "`n") -Encoding UTF8
-        (Get-SessionCwd $p) -eq 'C:\x\y'
-    }
-
-    Write-Host '-- relay: stall detection (drives resume vs stand-down) --'
-    Test-Case 'ends with a completed assistant reply -> finished' {
-        $f = New-Fixture 'tail-fin.jsonl' @(
-            (Rec-User 'go' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-Assistant 'all done' '2026-07-26T01:00:05.000Z')
-        )
-        (Get-SessionTailState $f) -eq 'finished'
-    }
-    Test-Case 'ends mid tool call -> stalled' {
-        $f = New-Fixture 'tail-tool.jsonl' @(
-            (Rec-User 'go' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-AssistantToolUse '2026-07-26T01:00:05.000Z')
-        )
-        (Get-SessionTailState $f) -eq 'stalled'
-    }
-    Test-Case 'ends with an unanswered user message -> stalled' {
-        $f = New-Fixture 'tail-user.jsonl' @(
-            (Rec-Assistant 'previous answer' '2026-07-26T01:00:00.000Z'),
-            (Rec-User 'and now this' '2026-07-26T02:00:00.000Z' $null)
-        )
-        (Get-SessionTailState $f) -eq 'stalled'
-    }
-    Test-Case 'unreadable transcript -> unknown (treated as stalled upstream)' {
-        (Get-SessionTailState (Join-Path $Tmp 'nope.jsonl')) -eq 'unknown'
-    }
-    Test-Case 'a limit-kill record -> limit, NOT finished (the 07-30 standdown bug)' {
-        # regression: this record was classified 'finished', so the sentry
-        # stood down on a limit-killed task and the relay never fired
-        $f = New-Fixture 'tail-limit.jsonl' @(
-            (Rec-User 'go' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z')
-        )
-        (Get-SessionTailState $f) -eq 'limit'
-    }
-    Test-Case 'bookkeeping piled on after the kill does not hide it' {
-        $f = New-Fixture 'tail-limit2.jsonl' @(
-            (Rec-User 'go' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z'),
-            (Rec-Bookkeeping 'attachment' '2026-07-26T02:00:01.000Z'),
-            (Rec-Bookkeeping 'turn_duration' '2026-07-26T02:00:02.000Z')
-        )
-        (Get-SessionTailState $f) -eq 'limit'
-    }
-    Test-Case 'a real turn AFTER the kill clears the limit state' {
-        # the human resumed by hand: the transcript no longer ends at the kill
-        $f = New-Fixture 'tail-limit3.jsonl' @(
-            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z'),
-            (Rec-User 'picked it up myself' '2026-07-26T03:00:00.000Z' $null),
-            (Rec-Assistant 'done' '2026-07-26T03:00:05.000Z')
-        )
-        (Get-SessionTailState $f) -eq 'finished'
-    }
-    Test-Case 'a normal reply that merely TALKS about limits stays finished' {
-        # transcripts around this tool are full of limit words; only the
-        # structured error fields may flip the verdict
-        $f = New-Fixture 'tail-prose.jsonl' @(
-            (Rec-User 'explain' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-Assistant 'the usage limit resets at 3pm normally' '2026-07-26T01:00:05.000Z')
-        )
-        (Get-SessionTailState $f) -eq 'finished'
-    }
-    Test-Case 'a flood of subagent records after the kill cannot hide it' {
-        # parallel subagents drain after a kill: dozens of isSidechain assistant
-        # lines land on top of the kill record. Reading one of them as the tail
-        # flipped a limit-killed task to 'finished' (the 07-30 bug, sidechain
-        # variant) - the verdict must come from the MAIN chain only.
-        $lines = @(
-            (Rec-User 'go' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z')
-        )
-        foreach ($k in 1..60) { $lines += (Rec-Sidechain "subagent line $k" '2026-07-26T02:00:01.000Z') }
-        $f = New-Fixture 'tail-sidechain.jsonl' $lines
-        (Get-SessionTailState $f) -eq 'limit'
-    }
-    Test-Case 'a sidechain reply at the tail does not mask an unanswered user message' {
-        $f = New-Fixture 'tail-sidechain2.jsonl' @(
-            (Rec-Assistant 'earlier answer' '2026-07-26T01:00:00.000Z'),
-            (Rec-User 'now do this' '2026-07-26T02:00:00.000Z' $null),
-            (Rec-Sidechain 'subagent finishing up' '2026-07-26T02:00:01.000Z')
-        )
-        (Get-SessionTailState $f) -eq 'stalled'
-    }
-
-    Write-Host '-- relay: fire-time gate (re-judged at the moment of launch) --'
-    function Test-FireGateCase([string]$sid, [string[]]$lines) {
-        # Resolve-FireGate looks the session up under $env:USERPROFILE - point
-        # it at the fixture tree for the duration of one call
-        $prev = $env:USERPROFILE
-        try {
-            $env:USERPROFILE = $Tmp
-            $bdir = Join-Path $Tmp '.claude\projects\clr-fg'
-            New-Item -ItemType Directory -Path $bdir -Force | Out-Null
-            if ($lines) { Set-Content -Path (Join-Path $bdir ($sid + '.jsonl')) -Value ($lines -join "`n") -Encoding UTF8 }
-            Resolve-FireGate ([pscustomobject]@{ session = $sid })
-        } finally { $env:USERPROFILE = $prev }
-    }
-    Test-Case 'gate: tail still the kill record -> fire' {
-        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000001' @(
-            (Rec-User 'go' '2026-07-26T01:00:00.000Z' $null),
-            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z')
-        )) -eq 'fire'
-    }
-    Test-Case 'gate: finished by someone else while we waited -> stand down, not fire' {
-        # the hole this closes: human (or the CLI limit-picker auto-continue)
-        # resumed and FINISHED the task hours ago - the old code fired anyway
-        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000002' @(
-            (Rec-AssistantLimit '2026-07-26T02:00:00.000Z'),
-            (Rec-User 'picked it up myself' '2026-07-26T03:00:00.000Z' $null),
-            (Rec-Assistant 'all done' '2026-07-26T03:00:05.000Z')
-        )) -eq 'finished'
-    }
-    Test-Case 'gate: cut off mid-flight and long idle -> fire (watch-stall path)' {
-        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000003' @(
-            (Rec-Assistant 'earlier' '2026-07-26T01:00:00.000Z'),
-            (Rec-User 'unanswered' '2026-07-26T02:00:00.000Z' $null)
-        )) -eq 'fire'
-    }
-    Test-Case 'gate: a real turn minutes ago -> yield (someone is driving)' {
-        $freshTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000004' @(
-            (Rec-User 'still here' $freshTs $null),
-            (Rec-Assistant 'on it' $freshTs)
-        )) -eq 'yield'
-    }
-    Test-Case 'gate: transcript gone -> missing (relay cancelled, never fired blind)' {
-        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000005' @()) -eq 'missing'
-    }
-    Test-Case 'gate: unreadable tail (all sidechain) -> fire, never an unbounded skip' {
-        # regression (review 2026-08-15): mapping 'unknown' to a skip state
-        # parked the entry FOREVER - nothing counted against maxLegs, and a
-        # real ping fired every 10 min for good. Firing is bounded; skipping
-        # was not. 'unknown' must fire like 'stalled', per its own contract.
-        $lines = @()
-        foreach ($k in 1..30) { $lines += (Rec-Sidechain "drain $k" '2026-07-26T02:00:01.000Z') }
-        (Test-FireGateCase 'aaaaaaaa-0000-0000-0000-000000000006' $lines) -eq 'fire'
-    }
-    Test-Case 'bash-path conversion escapes sh metachars ($ and backtick survive quoting)' {
-        # the tap path lands inside sh double quotes, which stop word-splitting
-        # but NOT $var/backtick expansion - C:\tools\$dev\tap.cjs must not
-        # expand to an empty segment and starve the downstream statusline
-        (ConvertTo-BashPath 'C:\tools\$dev\x.cjs') -eq '/c/tools/\$dev/x.cjs'
-    }
-
-    Write-Host '-- relay: ratelimit brake (cached resets_at may defer, never trigger) --'
-    Test-Case 'resets_at accepts epoch seconds, epoch millis and ISO; garbage -> null' {
-        $a = ConvertTo-LocalTime 1786849200
-        $b = ConvertTo-LocalTime 1786849200000
-        $c = ConvertTo-LocalTime '2026-08-15T23:30:00+08:00'
-        $d = ConvertTo-LocalTime 'soon'
-        ($a -and $a.Year -eq 2026) -and ($b -eq $a) -and ($c -and $c.Year -eq 2026) -and ($null -eq $d)
-    }
-    Test-Case 'brake: exhausted bucket + near reset -> defer to that reset' {
-        $now = Get-Date
-        $rl = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
-            utilization = 99.5; resets_at = $now.AddMinutes(40).ToUniversalTime().ToString('o') } } }
-        $b = Get-ResetBrakeUntil $rl $now
-        $b -and ([Math]::Abs(($b - $now.AddMinutes(40)).TotalMinutes) -lt 1)
-    }
-    Test-Case 'brake: the live-observed payload shape works (used_percentage + epoch)' {
-        # captured live 2026-08-15: {"used_percentage":64,"resets_at":1786849200}
-        $now = Get-Date
-        $epoch = [DateTimeOffset]::new($now.AddMinutes(30)).ToUnixTimeSeconds()
-        $rl = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
-            used_percentage = 100; resets_at = $epoch } } }
-        $b = Get-ResetBrakeUntil $rl $now
-        $b -and ([Math]::Abs(($b - $now.AddMinutes(30)).TotalMinutes) -lt 1)
-    }
-    Test-Case 'brake: capped at now+2h - garbage can cost one bounded wait, never a deadlock' {
-        $now = Get-Date
-        $rl = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
-            utilization = 100; resets_at = $now.AddHours(7).ToUniversalTime().ToString('o') } } }
-        $b = Get-ResetBrakeUntil $rl $now
-        $b -and ([Math]::Abs(($b - $now.AddHours(2)).TotalMinutes) -lt 1)
-    }
-    Test-Case 'brake: a bucket that is not exhausted never brakes' {
-        $now = Get-Date
-        $rl = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
-            used_percentage = 64; resets_at = $now.AddMinutes(40).ToUniversalTime().ToString('o') } } }
-        $null -eq (Get-ResetBrakeUntil $rl $now)
-    }
-    Test-Case 'brake: a reset already in the past, or missing data, never brakes' {
-        $now = Get-Date
-        $past = [pscustomobject]@{ rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{
-            utilization = 100; resets_at = $now.AddMinutes(-5).ToUniversalTime().ToString('o') } } }
-        ($null -eq (Get-ResetBrakeUntil $past $now)) -and
-            ($null -eq (Get-ResetBrakeUntil $null $now)) -and
-            ($null -eq (Get-ResetBrakeUntil ([pscustomobject]@{ rate_limits = $null }) $now))
-    }
-
-    Write-Host '-- relay: limit detection is CLI-phrase only --'
-    Test-Case 'real CLI limit phrases match (corpus web-verified 2026-08-04)' {
-        $ok = $true
-        foreach ($s in @(
-            'Claude usage limit reached. Your limit will reset at 3pm.',
-            'Claude AI usage limit reached|1754298000',
-            '5-hour limit reached - resets 3pm',
-            '5-hour limit reached ∙ resets 5am',
-            'Your limit will reset at 10am (America/Los_Angeles)',
-            'You''ve hit your session limit · resets 1:40pm (America/Los_Angeles)',
-            'You''ve hit your weekly limit · resets Mon 12:00am',
-            'You''ve hit your weekly limit · resets May 28 at 7pm (Europe/Madrid)',
-            'You''ve hit your Opus limit · resets 3:45pm',
-            'You''ve hit your Fable limit · resets Monday',   # synthetic: proves the "limit · resets" net needs no model name and no digit
-            'Weekly limit reached ∙ resets 6pm',
-            'Opus weekly limit reached ∙ resets Oct 24',
-            'You''re out of extra usage. Add more usage credits at: https://claude.ai/settings/usage',
-            'Out of usage credits',
-            'You are out of extra credits')) {
-            if ($s -notmatch $LimitRx) { $ok = $false; Write-Host ('    MISSED: ' + $s) }
-        }
-        $ok
-    }
-    Test-Case 'ordinary prose and non-quota errors do NOT match' {
-        # we are building limit tooling: the model's own text is full of the
-        # word, so the verdict must never come from model prose. And two real
-        # CLI messages contain limit-words while NOT being quota exhaustion.
-        $ok = $true
-        foreach ($s in @(
-            'I set a limit of 5 retries in the loop',
-            'the rate limiter is configured per session',
-            'this limits how many legs can run',
-            'API Error: Server is temporarily limiting requests (not your usage limit)',
-            'API Error: Usage credits required for 1M context · run /usage-credits to turn them on, or /model to switch to standard context',
-            'Approaching weekly limit',
-            'Approaching 5-hour limit.',
-            'This request would exceed your account''s rate limit. Please try again later.')) {
-            if ($s -match $LimitRx) { $ok = $false; Write-Host ('    FALSE HIT: ' + $s) }
-        }
-        $ok
-    }
-
-    Test-Case 'effort inheritance: last assistant tier wins; quoted prose cannot fake it' {
-        # arm-time sniff: the transcript records the RESOLVED tier per assistant
-        # record (ultracode sessions record plain xhigh). Quoted records inside
-        # user/tool lines are \"-escaped and must not fool the scan.
-        $f = Join-Path ([System.IO.Path]::GetTempPath()) ('relay-test-effort-' + [guid]::NewGuid().ToString('n') + '.jsonl')
-        @(
-            '{"type":"assistant","effort":"medium","message":{"content":[]}}',
-            '{"type":"user","message":{"content":"log says \"type\":\"assistant\" with \"effort\":\"max\" somewhere"}}',
-            '{"type":"assistant","effort":"xhigh","message":{"content":[]}}'
-        ) | Set-Content -Path $f -Encoding UTF8
-        $r = Get-SessionEffort $f
-        Remove-Item $f -ErrorAction SilentlyContinue
-        $r -eq 'xhigh'
-    }
-    Test-Case 'ultracode toggle is restored as-is; a later plain-tier /effort wins instead' {
-        # the /effort ultracode switch lands as a user record with a STRING
-        # content - the sniffer must return 'ultracode' verbatim (the launch
-        # flag accepts it, verified live on 2.1.221), and a later /effort back
-        # to a plain tier must fall through to the assistant-record tier
-        $f = Join-Path ([System.IO.Path]::GetTempPath()) ('relay-test-ultra-' + [guid]::NewGuid().ToString('n') + '.jsonl')
-        @(
-            '{"type":"user","message":{"content":"<local-command-stdout>Set effort level to ultracode (this session only): xhigh + dynamic workflow orchestration</local-command-stdout>"}}',
-            '{"type":"assistant","effort":"xhigh","message":{"content":[]}}'
-        ) | Set-Content -Path $f -Encoding UTF8
-        $a = Get-SessionEffort $f
-        Add-Content -Path $f -Value '{"type":"user","message":{"content":"<local-command-stdout>Set effort level to xhigh (saved as your default for new sessions)</local-command-stdout>"}}' -Encoding UTF8
-        $b = Get-SessionEffort $f
-        Remove-Item $f -ErrorAction SilentlyContinue
-        ($a -eq 'ultracode') -and ($b -eq 'xhigh')
-    }
-    Test-Case 'no spawn site hardcodes an effort tier anymore' {
-        $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
-        ($r -match 'function Get-SessionEffort') -and
-            ($r -notmatch "--effort high'") -and ($r -notmatch '--effort high"')
-    }
-    Test-Case 'effort armor: env override scrubbed, print-mode workflow ceiling raised' {
-        # CLAUDE_CODE_EFFORT_LEVEL beats --effort and silently disables
-        # ultracode orchestration; print mode clips background workflows at
-        # ~10 min unless the ceiling is raised (docs: model-config, headless)
-        $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
-        $p = Get-Content (Join-Path $Repo 'panel.ps1') -Raw -Encoding UTF8
-        # NO_COLOR: third variable leaked down the same path - a takeover TUI
-        # inheriting it renders one flat monochrome wall (observed 08-09)
-        ($r -match 'Env:CLAUDE_CODE_EFFORT_LEVEL') -and
-            ($p -match 'Env:CLAUDE_CODE_EFFORT_LEVEL') -and
-            ($r -match 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS') -and
-            ($r -match 'Env:NO_COLOR') -and ($p -match 'Env:NO_COLOR')
-    }
-
-    Write-Host '-- relay: armed-state layer --'
-    Test-Case 'a .lock.json is never parsed as an armed entry' {
-        # regression: *.json matched the lock file too, surfacing a phantom task
-        $ArmedDir = Join-Path $Tmp 'armed'
-        New-Item -ItemType Directory -Path $ArmedDir -Force | Out-Null
-        $sid = '11111111-2222-3333-4444-555555555555'
-        @{ session = $sid; mode = 'watch'; legs = 0; maxLegs = 3; cwd = 'C:\x' } | ConvertTo-Json | Set-Content (Join-Path $ArmedDir "$sid.json") -Encoding UTF8
-        @{ pid = 4242 } | ConvertTo-Json | Set-Content (Join-Path $ArmedDir "$sid.lock.json") -Encoding UTF8
-        $all = @(Get-ArmedAll)
-        ($all.Count -eq 1) -and ($all[0].session -eq $sid)
-    }
-    Test-Case 'relay legs rewrites maxLegs in place without touching the rest' {
-        $ArmedDir = Join-Path $Tmp 'armed-legs'
-        $LogPath  = Join-Path $Tmp 'legs-log.jsonl'   # shadows the real journal
-        New-Item -ItemType Directory -Path $ArmedDir -Force | Out-Null
-        $sid = '22222222-3333-4444-5555-666666666666'
-        @{ session = $sid; mode = 'wait'; legs = 1; maxLegs = 2; cwd = 'C:\x' } |
-            ConvertTo-Json | Set-Content (Join-Path $ArmedDir "$sid.json") -Encoding UTF8
-        $Arg = '22222222'; $Arg2 = '4'
-        Invoke-SetLegs 6>$null
-        $e = Get-Content (Join-Path $ArmedDir "$sid.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-        ($e.maxLegs -eq 4) -and ($e.legs -eq 1) -and ($e.mode -eq 'wait')
-    }
-    Test-Case 'Complete-Entry records the leg summary for the panel' {
-        # "what did that leg do all night" must be answerable from the panel
-        $ArmedDir = Join-Path $Tmp 'armed-done'
-        $DoneDir  = Join-Path $Tmp 'done-done'
-        New-Item -ItemType Directory -Path $ArmedDir, $DoneDir -Force | Out-Null
-        $sid = '55555555-6666-7777-8888-999999999999'
-        $e = [pscustomobject]@{ session = $sid; cwd = 'C:\x' }
-        Complete-Entry $e $true 'out.log' 'wrapped everything up'
-        $d = Get-Content (Join-Path $DoneDir "$sid.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-        ($d.summary -eq 'wrapped everything up') -and ($d.ok -eq $true)
-    }
-    Test-Case 'an alive leg lock blocks the tick (no double-launch, no false yield)' {
-        # regression: the yield guard misread an in-flight leg's own writes as
-        # a human taking over and flipped the entry back to watch mid-leg
-        $ArmedDir = Join-Path $Tmp 'armed-lock'
-        New-Item -ItemType Directory -Path $ArmedDir -Force | Out-Null
-        $sid = '33333333-4444-5555-6666-777777777777'
-        @{ pid = $PID } | ConvertTo-Json | Set-Content (Join-Path $ArmedDir "$sid.lock.json") -Encoding UTF8
-        Test-LegInFlight $sid
-    }
-    Test-Case 'a stale lock (dead pid) is cleared and does not block' {
-        $ArmedDir = Join-Path $Tmp 'armed-lock'
-        $sid = '44444444-5555-6666-7777-888888888888'
-        # 999999 is not a multiple of 4, so it can never be a real Windows pid
-        @{ pid = 999999 } | ConvertTo-Json | Set-Content (Join-Path $ArmedDir "$sid.lock.json") -Encoding UTF8
-        (-not (Test-LegInFlight $sid)) -and (-not (Test-Path (Join-Path $ArmedDir "$sid.lock.json")))
-    }
-    Test-Case 'the wt takeover line carries no raw semicolon' {
-        # wt treats ; as its own subcommand separator EVEN INSIDE QUOTES - an
-        # inline env-var statement got split into three broken tabs (08-02)
-        $relay = Get-Content (Join-Path $Repo 'relay.ps1') -Raw
-        $wtLine = (($relay -split "`n") | Where-Object { $_ -match '-w 0 nt -d' }) -join ''
-        ($wtLine.Length -gt 0) -and ($wtLine -notmatch ';')
-    }
-    Test-Case 'legs and takeover force an effort level (headless default is low)' {
-        $relay = Get-Content (Join-Path $Repo 'relay.ps1') -Raw
-        ([regex]::Matches($relay, '--effort')).Count -ge 3
-    }
-    Test-Case 'relay legs rejects a count outside 1-9' {
-        $ArmedDir = Join-Path $Tmp 'armed-legs'
-        $LogPath  = Join-Path $Tmp 'legs-log.jsonl'
-        $sid = '22222222-3333-4444-5555-666666666666'
-        $Arg = '22222222'; $Arg2 = '99'
-        Invoke-SetLegs 6>$null
-        $e = Get-Content (Join-Path $ArmedDir "$sid.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-        $e.maxLegs -eq 4   # unchanged from the previous case
-    }
-}
-
 # ------------------------------------------------------------------ panel.ps1
 Write-Host ''
 Write-Host '-- panel: HTTP surface (spare port 7879) --'
@@ -693,17 +255,12 @@ try {
     Test-Case 'GET / serves the page and forbids caching' {
         # stale cached pages masqueraded as bugs twice, hence the header
         $r = Invoke-WebRequest -Uri "$base/" -UseBasicParsing -TimeoutSec 15
-        ($r.StatusCode -eq 200) -and ($r.Content -like '*claude-limit-relay*') -and
+        ($r.StatusCode -eq 200) -and ($r.Content -like '*claude-preheat*') -and
             (($r.Headers['Cache-Control'] -join ',') -like '*no-cache*')
     }
-    Test-Case 'GET /api/status shapes {preheat:{tasks}, relay:{armed,done}}' {
+    Test-Case 'GET /api/status shapes {preheat:{tasks}}' {
         $s = (Invoke-WebRequest -Uri "$base/api/status" -UseBasicParsing -TimeoutSec 15).Content | ConvertFrom-Json
-        ($null -ne $s.preheat) -and ($null -ne $s.relay) -and
-            ($s.preheat.PSObject.Properties['tasks']) -and ($s.relay.PSObject.Properties['armed'])
-    }
-    Test-Case 'GET /api/sessions returns a JSON array' {
-        $raw = (Invoke-WebRequest -Uri "$base/api/sessions" -UseBasicParsing -TimeoutSec 40).Content
-        $raw.TrimStart().StartsWith('[')
+        ($null -ne $s.preheat) -and ($s.preheat.PSObject.Properties['tasks'])
     }
     Test-Case 'GET /api/schedule returns the parsed config' {
         $s = (Invoke-WebRequest -Uri "$base/api/schedule" -UseBasicParsing -TimeoutSec 15).Content | ConvertFrom-Json
@@ -729,23 +286,10 @@ try {
     }
 
     Test-Case 'POST without a JSON content type -> 400' {
-        (Invoke-PanelPost '/api/relay/arm' '{}' @{ Origin = "http://localhost:$panelPort" } 'text/plain').Code -eq 400
+        (Invoke-PanelPost '/api/preheat/once' '{}' @{ Origin = "http://localhost:$panelPort" } 'text/plain').Code -eq 400
     }
     Test-Case 'POST from a foreign origin -> 403' {
-        (Invoke-PanelPost '/api/relay/arm' '{}' @{ Origin = 'http://evil.example' } 'application/json').Code -eq 403
-    }
-    Test-Case 'POST with a malformed session id -> 400' {
-        (Invoke-PanelPost '/api/relay/arm' '{"session":"not-a-uuid"}' @{ Origin = "http://localhost:$panelPort" } 'application/json').Code -eq 400
-    }
-    Test-Case 'POST /api/relay/dismiss for an unknown session is a harmless 200' {
-        $r = Invoke-PanelPost '/api/relay/dismiss' '{"session":"99999999-8888-7777-6666-555555555555"}' @{ Origin = "http://localhost:$panelPort" } 'application/json'
-        ($r.Code -eq 200) -and ($r.Body -like '*"ok":true*')
-    }
-    Test-Case 'POST /api/relay/takeover without a target is refused (never hangs on a picker)' {
-        (Invoke-PanelPost '/api/relay/takeover' '{}' @{ Origin = "http://localhost:$panelPort" } 'application/json').Code -eq 400
-    }
-    Test-Case 'POST /api/relay/legs with a count outside 1-9 -> 400' {
-        (Invoke-PanelPost '/api/relay/legs' '{"session":"11111111-2222-3333-4444-555555555555","maxLegs":99}' @{ Origin = "http://localhost:$panelPort" } 'application/json').Code -eq 400
+        (Invoke-PanelPost '/api/preheat/once' '{}' @{ Origin = 'http://evil.example' } 'application/json').Code -eq 403
     }
     Test-Case 'GET /api/ratelimits answers a JSON object' {
         $raw = (Invoke-WebRequest -Uri "$base/api/ratelimits" -UseBasicParsing -TimeoutSec 15).Content
@@ -801,44 +345,6 @@ Test-Case 'tap survives non-JSON stdin by forwarding it untouched' {
     (Get-Content (Join-Path $td 'junk.out') -Raw) -eq 'not json at all'
 }
 
-# -------------------------------------------------- doctor & rehearsal (child pwsh)
-Write-Host ''
-Write-Host '-- doctor & rehearsal --'
-$childShell = 'pwsh'
-if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) { $childShell = 'powershell' }
-
-Test-Case 'relay doctor runs its checks and prints a summary' {
-    # environment-dependent results (warnings are fine) - what must hold is
-    # that the check-up itself completes and reports
-    $out = & $childShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Repo 'relay.ps1') doctor 2>&1 | Out-String
-    ($out -match 'claude-limit-relay doctor') -and ($out -match 'doctor: \d+ failure') -and
-        ($out -match '\[ OK \]')
-}
-Test-Case 'relay test rehearses the full chain in a sandbox and passes' {
-    # the big one: detect -> gate -> mock leg -> moved-transcript proof ->
-    # done record, all against a throwaway sandbox, zero quota
-    $out = & $childShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Repo 'relay.ps1') test 2>&1 | Out-String
-    ($LASTEXITCODE -eq 0) -and ($out -match 'REHEARSAL PASS')
-}
-Test-Case 'the rehearsal ALSO passes under Windows PowerShell 5.1 (declared minimum)' {
-    # regression (review 2026-08-15): the pwsh-preferred child kept a fully
-    # broken 5.1 green - on 5.1, Start-Process -PassThru leaves ExitCode null
-    # unless .Handle is touched, and a BOM-less file mangles $LimitRx into an
-    # invalid regex under the ANSI codepage. Both are fixed; this proves it.
-    $winPs = Get-Command powershell -ErrorAction SilentlyContinue
-    if (-not $winPs) { Write-Host '    (powershell 5.1 not found - skipped)'; return $true }
-    $out = & $winPs.Source -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Repo 'relay.ps1') test 2>&1 | Out-String
-    ($LASTEXITCODE -eq 0) -and ($out -match 'REHEARSAL PASS')
-}
-Test-Case 'the rehearsal never touches the real scheduler or armed dir' {
-    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
-    # the sandbox redirect and the scheduler stubs must both be present
-    ($r -match 'function Invoke-Rehearsal') -and
-        ($r -match 'Set-Item function:script:Register-ProbeTask') -and
-        ($r -match 'Set-Item function:script:Unregister-ProbeTask') -and
-        ($r -match '\$script:ArmedDir\s*=')
-}
-
 # ----------------------------------------------------------------- statics
 Write-Host ''
 Write-Host '-- static hygiene --'
@@ -857,7 +363,8 @@ Test-Case 'no shipped file still carries the old name' {
     $hits.Count -eq 0
 }
 Test-Case 'the page uses plain wording (no musical-string metaphor)' {
-    (Get-Content (Join-Path $Repo 'web\index.html') -Raw -Encoding UTF8) -notmatch '弦'
+    # code point instead of the literal CJK char: keeps this file pure ASCII
+    (Get-Content (Join-Path $Repo 'web\index.html') -Raw -Encoding UTF8) -notmatch ([string][char]0x5F26)
 }
 Test-Case 'panel page ships bilingual: string table, language toggle, persisted choice' {
     # every user-facing string must come from the I18N table so the header
@@ -867,46 +374,8 @@ Test-Case 'panel page ships bilingual: string table, language toggle, persisted 
         ($h -match 'clr_lang') -and ($h -match 'data-i18n=') -and
         ($h -match 'function t\(')
 }
-Test-Case 'both scheduled-task registrars keep -WakeToRun (sleep must not eat a fire)' {
-    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
-    $p = Get-Content (Join-Path $Repo 'preheat.ps1') -Raw -Encoding UTF8
-    ($r -match '-WakeToRun') -and ($p -match '-WakeToRun')
-}
-Test-Case 'the probe launch loop goes through the fire-time gate' {
-    # every leg launch must re-judge the transcript at the moment of fire;
-    # bypassing Resolve-FireGate reopens the fire-into-finished-work hole
-    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
-    ($r -match 'function Resolve-FireGate') -and
-        ($r -match '\$gate = Resolve-FireGate') -and
-        ($r -match "'finished-by-others'") -and
-        ($r -match '"isSidechain"')
-}
-Test-Case 'a leg that exits ok must also prove the transcript moved' {
-    # tools in the wild have shipped RESUMED banners while nothing resumed;
-    # exit 0 + a result string is not proof - the verdict phase must compare
-    # transcript activity against a pre-launch snapshot
-    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
-    ($r -match 'preAct') -and ($r -match 'transcript did not move')
-}
-Test-Case 'the panel surfaces the leg summary bilingually' {
-    $p = Get-Content (Join-Path $Repo 'panel.ps1') -Raw -Encoding UTF8
-    $h = Get-Content (Join-Path $Repo 'web\index.html') -Raw -Encoding UTF8
-    ($p -match 'summary') -and ($h -match 'd\.summary') -and
-        (([regex]::Matches($h, 'last_reply:')).Count -eq 2)
-}
-Test-Case 'model-cap park path exists: no-fallback entries freeze instead of burning legs' {
-    # quality-critical tasks may refuse the fallback hop - the entry must then
-    # park (no pings, no legs) rather than relaunch the dead model
-    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
-    ($r -match "'model-cap-parked'") -and
-        ($r -match "-ne 'watch' -and \`$m -ne 'parked'") -and
-        ($r -match "-eq 'parked'")
-}
-Test-Case 'panel exposes the fallback choice and passes -Fallback through validated' {
-    $p = Get-Content (Join-Path $Repo 'panel.ps1') -Raw -Encoding UTF8
-    $h = Get-Content (Join-Path $Repo 'web\index.html') -Raw -Encoding UTF8
-    ($p -match "'-Fallback'") -and ($p -match 'invalid fallback') -and
-        ($h -match 'fbMode') -and ($h -match "'parked'")
+Test-Case 'the scheduled-task registrar keeps -WakeToRun (sleep must not eat a fire)' {
+    (Get-Content (Join-Path $Repo 'preheat.ps1') -Raw -Encoding UTF8) -match '-WakeToRun'
 }
 Test-Case 'Quote-Arg doubles backslash runs before quotes (argv-splice guard)' {
     # Windows argv parsing treats  \"  as an escaped quote: quoting that only
@@ -925,46 +394,31 @@ Test-Case 'week-grid chips edit in place via the clock picker, committed on blur
         ($html -notmatch 'tedit') -and
         ($html -notmatch "inp\.addEventListener\('change'")
 }
-Test-Case 'claude spawns are armored against the child-session marker' {
+Test-Case 'the panel scrubs the child-session marker before spawning' {
     # a claude that inherits CLAUDE_CODE_CHILD_SESSION silently stops saving
-    # transcripts - quota burns, the record never lands (a 34-min takeover
-    # session left zero trace, observed live 07-31). Both scripts must scrub
-    # the marker, and both interactive/headless resume sites must force
-    # persistence.
-    $relay = Get-Content (Join-Path $Repo 'relay.ps1') -Raw
-    $panel = Get-Content (Join-Path $Repo 'panel.ps1') -Raw
-    ($relay -match 'Remove-Item Env:CLAUDE_CODE_CHILD_SESSION') -and
-        ($panel -match 'Remove-Item Env:CLAUDE_CODE_CHILD_SESSION') -and
-        (([regex]::Matches($relay, 'CLAUDE_CODE_FORCE_SESSION_PERSISTENCE')).Count -ge 3)
+    # transcripts - quota burns, the record never lands (observed live 07-31);
+    # the pings preheat.ps1 spawns under the panel must start from a clean env
+    (Get-Content (Join-Path $Repo 'panel.ps1') -Raw) -match 'Remove-Item Env:CLAUDE_CODE_CHILD_SESSION'
 }
 Test-Case 'every shipped script carries a UTF-8 BOM (5.1 decodes BOM-less as ANSI)' {
     # without the BOM, Windows PowerShell 5.1 reads these files through the
     # legacy codepage: on cp936 the middle-dot chars in comments/corpus turn
     # to mojibake, and a bare [] class once became an invalid regex
     $ok = $true
-    foreach ($f in @('preheat.ps1', 'relay.ps1', 'panel.ps1', 'install.ps1', 'test.ps1')) {
+    foreach ($f in @('preheat.ps1', 'panel.ps1', 'install.ps1', 'test.ps1')) {
         $b = [System.IO.File]::ReadAllBytes((Join-Path $Repo $f))
         if (-not ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) { $ok = $false }
     }
     $ok
 }
-Test-Case 'the $LimitRx source line is pure ASCII (locale-proof even without a BOM)' {
-    $line = (Get-Content (Join-Path $Repo 'relay.ps1') -Encoding UTF8 | Where-Object { $_ -match '^\$LimitRx' } | Select-Object -First 1)
-    $ascii = $true
-    foreach ($ch in $line.ToCharArray()) { if ([int]$ch -gt 127) { $ascii = $false } }
-    ($line.Length -gt 0) -and $ascii -and ($line -like '*u00B7*') -and ($line -like '*u2219*')
-}
 Test-Case 'every ExitCode-reading Start-Process touches .Handle first (PS 5.1 null trap)' {
     # 5.1 returns a process object whose ExitCode stays null forever unless
-    # .Handle was read before the process exits - every ping/leg/backend
-    # spawn whose ExitCode we judge must carry the touch
+    # .Handle was read before the process exits - every ping/backend spawn
+    # whose ExitCode we judge must carry the touch
     $ok = $true
-    foreach ($f in @('relay.ps1', 'preheat.ps1', 'panel.ps1')) {
+    foreach ($f in @('preheat.ps1', 'panel.ps1')) {
         $c = Get-Content (Join-Path $Repo $f) -Raw -Encoding UTF8
-        $spawns = ([regex]::Matches($c, '-PassThru -NoNewWindow')).Count
-        $touches = ([regex]::Matches($c, '\$null = \$p\.Handle')).Count
-        if ($touches -lt 1) { $ok = $false }
-        if ($f -eq 'relay.ps1' -and $touches -lt 2) { $ok = $false }   # ping + leg
+        if (([regex]::Matches($c, '\$null = \$p\.Handle')).Count -lt 1) { $ok = $false }
     }
     $ok
 }
@@ -972,20 +426,20 @@ Test-Case 'statusline on/off consult BOTH settings files and the sidecar path' {
     # regression (review 2026-08-15): off re-derived "the file with a
     # statusLine, local first" and went no-op when the tap sat in the other
     # file; on could then double-wrap and clobber the sidecar
-    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
+    $r = Get-Content (Join-Path $Repo 'preheat.ps1') -Raw -Encoding UTF8
     ($r -match '\$candFiles') -and ($r -match '\$tapFile') -and
         ($r -match 'sc\.file') -and ($r -match 'already installed \(in')
 }
 Test-Case 'every script parses' {
     $ok = $true
-    foreach ($f in @('preheat.ps1', 'relay.ps1', 'panel.ps1', 'install.ps1', 'test.ps1')) {
+    foreach ($f in @('preheat.ps1', 'panel.ps1', 'install.ps1', 'test.ps1')) {
         try { $null = [scriptblock]::Create((Get-Content (Join-Path $Repo $f) -Raw)) } catch { $ok = $false }
     }
     $ok
 }
 Test-Case 'no PowerShell 7-only syntax (project claims 5.1 support)' {
     $ok = $true
-    foreach ($f in @('preheat.ps1', 'relay.ps1', 'panel.ps1', 'install.ps1')) {
+    foreach ($f in @('preheat.ps1', 'panel.ps1', 'install.ps1')) {
         $c = Get-Content (Join-Path $Repo $f) -Raw
         if ($c -match '\?\?' -or $c -match '\)\s*\?\s*[^\s]+\s*:\s') { $ok = $false }
     }
@@ -998,16 +452,14 @@ Test-Case 'learn ships end to end: preheat command, panel endpoint, bilingual li
     ($pre -match "'\^learn\$'") -and ($pan -match '/api/learn') -and
         (([regex]::Matches($h, 'learn_waste:')).Count -eq 2)
 }
-Test-Case 'the ratelimit brake is wired in and the panel surfaces the cache bilingually' {
-    $r = Get-Content (Join-Path $Repo 'relay.ps1') -Raw -Encoding UTF8
+Test-Case 'the panel surfaces the ratelimit cache bilingually' {
     $p = Get-Content (Join-Path $Repo 'panel.ps1') -Raw -Encoding UTF8
     $h = Get-Content (Join-Path $Repo 'web\index.html') -Raw -Encoding UTF8
-    ($r -match "= 'brake'") -and ($r -match 'Get-ResetBrakeUntil') -and
-        ($p -match '/api/ratelimits') -and ($h -match 'api/ratelimits') -and
+    ($p -match '/api/ratelimits') -and ($h -match 'api/ratelimits') -and
         (([regex]::Matches($h, 'rl_5h:')).Count -eq 2)
 }
 Test-Case 'personal state stays out of git' {
-    $ignored = @('schedule.json', 'preheat-log.jsonl', 'relay-log.jsonl', '.claude',
+    $ignored = @('schedule.json', 'preheat-log.jsonl', '.claude',
         'state-ratelimits.json', 'statusline-original.json')
     $ok = $true
     foreach ($p in $ignored) {

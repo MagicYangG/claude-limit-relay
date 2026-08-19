@@ -1,17 +1,14 @@
-# claude-limit-relay
+# claude-preheat
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語** | [한국어](README.ko.md)
 
-Claude Code CLI を使う Claude サブスクリプションユーザー向けのツールです。できることは 2 つ:
-
-- **利用枠ウィンドウの予熱** — Windows タスクスケジューラで、指定した時刻にウィンドウを先取りします(5 時間ウィンドウは、枠が空いている状態で送られた最初のメッセージにアンカーされます)。本格的に作業を始めるとき、2 つの 5 時間ウィンドウをまたいで使えます
-- **ウィンドウ跨ぎのタスク中継** — タスクが 5 時間制限に当たりそう/当たったとき、パネルで登録したタスクが自動で見張り、枠が回復し次第すぐ再開します。戻ってきたらワンクリックで引き継ぎ
+Windows で Claude Code CLI を使う Claude サブスクリプションユーザー向けのツールです。役割は 1 つ: 5 時間の利用枠ウィンドウは、枠が空いている状態で送られた最初のメッセージにアンカーされます — スケジュールした極小のピングが、あなたの選んだ時刻にウィンドウをアンカーします。本番の作業を始めるときにはウィンドウがすでに動いているので、途中で切られる代わりに 2 つのウィンドウにまたがって作業できます。
 
 ## Web パネル
 
-ローカルアドレス: `localhost:7878`(英語/中国語、ヘッダーでワンクリック切替)
+ローカルアドレス: `localhost:7878`(英語/中国語のバイリンガル、ヘッダーでワンクリック切替)
 
-3 つのモジュール: 利用枠の予熱 / 中継キュー / 引き継ぎ
+モジュール: リアルタイム利用枠バー(5 時間 + 週次、正確なリセット時刻付き — `preheat statusline on` を一度実行すると値が流れます)/ 週次リセット時刻エディタ(`schedule.json` に書き込んで適用)/ 単発予熱 / 直近 7 日のウィンドウ利用率ライン(内部は `preheat learn`)
 
 ![panel](docs/panel.png)
 
@@ -22,7 +19,7 @@ Claude Code CLI を使う Claude サブスクリプションユーザー向け�
 **推奨: 以下を Claude Code(または他の AI コーディングツール)に貼り付けて、インストールを任せてください:**
 
 ```text
-https://github.com/MagicYangG/claude-limit-relay をクローンしてセットアップして:
+https://github.com/MagicYangG/claude-preheat をクローンしてセットアップして:
 1. git clone 後、リポジトリのディレクトリ内で install.ps1 を実行
 2. 毎週ウィンドウをリセットしたい時刻を私に聞いて、schedule.json に書き込む
    (reset にはリセット目標時刻を書く。予熱時刻は自動で reset − 5 時間)
@@ -33,63 +30,44 @@ install.ps1 と preheat apply が作るもの以外、何も登録・変更し�
 
 終わったらブラウザで `http://localhost:7878` を開き、あとはパネルから操作できます。
 
-**手動インストールは 3 ステップ**: `git clone` → `./install.ps1` → 新しいターミナルで `preheat apply`。コマンド一覧は文末の[コマンドリファレンス](#コマンドリファレンス)へ。
+**手動インストールは 3 ステップ**: `git clone` → `./install.ps1` → 新しいターミナルで `preheat apply`。コマンド一覧は[コマンドリファレンス](#コマンドリファレンス)へ。
 
 ## 注意事項
 
-1. **Claude Code CLI が必要**: 予熱も中継も Claude Code CLI 経由で実行されます
-2. **再開ウィンドウ**: 再開は同じディレクトリ・同じ会話・同じモデルと effort のまま、別のターミナルウィンドウで走ります。引き継いだら元のウィンドウを閉じ、2 つのウィンドウが同じ会話へ同時に書き込まないようにしてください。再開は `--dangerously-skip-permissions` で走ります(無人ではツール呼び出しを承認できないため)。含意は [SECURITY.md](SECURITY.md) を参照。
-3. **モデル別・週次上限のフォールバック**: Claude サブスクリプションにはモデル固有の週次上限があります。タスク登録時に、上限に当たったら opus に切り替えて完走するか、止まって待つかを選べます
+1. **Claude Code CLI が必要**: 予熱は CLI 経由で実行される極小のヘッドレスプロンプトです
+2. **稼働中のウィンドウへのピングは無害な no-op**: 些細なメッセージ 1 通ぶんのコストだけで、何も動きません
+3. **スリープからの復帰**: スケジュールした予熱が PC を起こせるのは、有効な電源プランでスリープ解除タイマーが有効な場合だけです — 無効なときは `preheat status` が警告します
+
+## relay はどこへ行った?
+
+v0.2.0 には、制限で止まったセッションを枠の回復と同時に復活させるウィンドウ跨ぎの自動再開(「relay」)が入っていました。Claude Code v2.1.234 がネイティブの自動継続を追加し — デフォルトで有効、`/config` の「Continue automatically at usage limit」で切替 — 席に留まっているケースをプロセス内で、正確なリセット時刻付きで、外部の見張り役より上手く処理するようになりました。v0.3.0 はプラットフォームと張り合うのをやめ、relay を引退させました。relay 入りの最後のリリースはタグ [v0.2.0](https://github.com/MagicYangG/claude-preheat/releases/tag/v0.2.0) に残してあります。ネイティブ機能がやらないこと — 席に着く前にウィンドウを開始すること — こそが preheat の仕事です。
 
 ## コマンドリファレンス
 
-普段はパネルで十分です。ターミナル派とスクリプト用に:
-
-### 予熱(preheat)
+普段使いはパネルで足ります。以下はターミナル派とスクリプト向けです。
 
 ```powershell
-preheat apply         # schedule.json から毎週の予熱タスクを登録(編集後に再実行で反映)
-preheat status        # ローカル活動 + 登録タスク + 直近ログ
-preheat reset 20:00   # 単発: ウィンドウを 20:00 にリセットさせる(15:00 に自動予熱)
-preheat at 15:00      # 単発: 15:00 に予熱
-preheat +2h           # 単発: 2 時間後に予熱
-preheat learn         # 直近30日のリズムから予熱時刻を提案 + 窓利用率レポート(learn auto で書き込み+適用)
-preheat off           # 予熱タスクを全削除
+preheat apply           # schedule.json から毎週の予熱タスクを登録(編集後に再実行で反映)
+preheat status          # ローカル活動 + 登録タスク + 直近ログ
+preheat reset 20:00     # 単発: ウィンドウを 20:00 にリセットさせる(15:00 に予熱)
+preheat at 15:00        # 単発: 15:00 に予熱
+preheat +2h             # 単発: 2 時間後に予熱
+preheat learn           # 直近 30 日のリズムから予熱時刻を提案 + 窓利用率レポート(learn auto で適用)
+preheat statusline on   # statusline を透過タップし、正確なリセット時刻をパネルの利用枠バーへ(off で復元)
+preheat off             # 予熱タスクを全削除
+claude-panel            # ローカル Web パネルを開く
 ```
 
 `schedule.json` の `reset` は**リセット目標時刻**。予熱時刻は自動で reset − 5h。`proxy` が空ならプロキシなし。
 
-### 中継(relay)
-
-**2 つのコマンド**: 離席前に `relay arm -Watch`、戻ったら `relay takeover`。
-
-relay は純粋な PowerShell で、どの Claude プロセスにも依存しません。再開が実行するのは `claude --resume <元の会話> -p "<継続プロンプト>"` — 会話の全履歴をマウントし、実際のプロンプトで何を続けるかを伝えます。
-
-| シナリオ | コマンド |
-|---|---|
-| すでに制限に当たった、席にいる | `relay arm`(候補の会話を確認; `-Yes` でスキップ) |
-| これから当たりそう | `relay arm -Watch`(見張り: プローブゼロ、トランスクリプトだけで生死を判定) |
-| 戻ってきて引き継ぐ | `relay takeover`(会話バケットに合うディレクトリへ移動 + 元の会話をマウント + 対話 CLI を起動、承認スキップを引き継ぐ。元のウィンドウは閉じること) |
+## アンインストール
 
 ```powershell
-relay arm -Prompt "テストを通してから締めて"   # 継続プロンプトを指定
-relay status                                  # キュー状態 / プローブタスク / 直近ログ
-relay legs a3f8 5                             # 登録を保ったまま中継上限を 5 に変更
-relay disarm                                  # 登録解除(進行中の再開プロセスも停止)
-relay doctor                                  # 前提チェック: CLI / タスク / 復帰フラグ / パネル
-relay test                                    # サンドボックスで全チェーンをリハーサル(モック claude、クォータ消費ゼロ)
-relay statusline on                           # statusline を透過タップして正確なリセット時刻を取得(off で復元)
+preheat off             # 予熱タスクを全削除
+preheat statusline off  # 元の statusline を復元(タップを有効にしていた場合)
 ```
 
-タスクがまたげるウィンドウ数: 自分で使った 1 つ + デフォルト 3 = 最大 4 ウィンドウ(約 20 時間)。`-MaxLegs N` で調整できます(登録後も `relay legs` かパネルで変更可)。週次上限には注意。
-
-### アンインストール
-
-```powershell
-preheat off      # 予熱タスクを全削除
-relay disarm     # 登録タスクを全解除
-```
-
-その後、`$PROFILE` の `# >>> claude-limit-relay functions >>>` から
-`# <<< claude-limit-relay functions <<<` までの行を削除し、リポジトリの
+その後、PowerShell プロファイルの `# >>> claude-preheat functions >>>` から
+`# <<< claude-preheat functions <<<` までの行を削除し(古いインストールでは
+`claude-limit-relay` のマーカーになっている場合があります)、リポジトリの
 ディレクトリを削除してください。

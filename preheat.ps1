@@ -1,11 +1,11 @@
 ﻿#Requires -Version 5.1
 <#
-claude-limit-relay -- Claude Max 5h usage-window preheater (P1) + phase observer (P3)
+claude-preheat -- Claude Max 5h usage-window preheater (P1) + phase observer (P3)
 
 Commands:
   apply          Register weekly preheat tasks from schedule.json
   status         Show window phase, scheduled preheats, recent fires
-                 -Json = print one compact JSON object instead (for panel.ps1)
+                 -Json = print one compact JSON object instead (for scripts)
   at HH:mm       One-shot: fire at the given wall-clock time (next occurrence)
   reset HH:mm    One-shot: fire so the window RESETS at the given time (fire = reset - 5h)
   +Nh / +Nm      One-shot: fire N hours/minutes from now
@@ -15,6 +15,10 @@ Commands:
                  7-day window-utilization report. 'auto' writes the suggested
                  rules into schedule.json (backed up) and applies them.
                  -Json = machine-readable report (for panel.ps1)
+  statusline on|off
+                 Wire statusline-tap.cjs into the statusLine (pure passthrough)
+                 so exact 5h/weekly reset times land in state-ratelimits.json
+                 for the panel quota strip
   off            Unregister all preheat tasks
 
 Mechanism: the Max 5h usage window is anchored by the FIRST request when no
@@ -236,7 +240,7 @@ function Send-Toast($ok) {
         if (Get-Module -ListAvailable -Name BurntToast) {
             Import-Module BurntToast -ErrorAction Stop
             $msg = if ($ok) { 'window preheated' } else { 'preheat FAILED - check preheat-log.jsonl' }
-            New-BurntToastNotification -Text 'claude-limit-relay', $msg | Out-Null
+            New-BurntToastNotification -Text 'claude-preheat', $msg | Out-Null
         }
     } catch { }
 }
@@ -352,7 +356,7 @@ function Get-NextOccurrence([string]$hhmm) {
 
 function Invoke-Status {
     Write-Host ''
-    Write-Host '=== claude-limit-relay ==='
+    Write-Host '=== claude-preheat ==='
     $last = Get-LastLocalActivity
     if ($last) {
         $gapH = ((Get-Date) - $last).TotalHours
@@ -397,10 +401,12 @@ function Invoke-Status {
         Write-Host '(no log yet)'
     }
     Write-Host ''
+    # same warning apply gives: a fire that cannot wake the PC is a silent no-show
+    Test-WakeTimers
 }
 
 function Invoke-StatusJson {
-    # single compact JSON object for panel.ps1 -- nothing else on stdout
+    # single compact JSON object for scripts -- nothing else on stdout
     $last = Get-LastLocalActivity
     $lastIso = $null
     if ($last) { $lastIso = $last.ToString('yyyy-MM-ddTHH:mm:ss') }
@@ -593,12 +599,142 @@ function Invoke-Off {
     Write-Host 'all preheat tasks removed'
 }
 
+function ConvertTo-BashPath([string]$p) {
+    # statusLine commands run under sh: C:\x\y -> /c/x/y. The result gets
+    # embedded inside double quotes, which stop word-splitting but NOT $ or
+    # backtick expansion - escape those so a path like C:\tools\$dev survives
+    $x = $p -replace '\\', '/'
+    if ($x -match '^([A-Za-z]):(.*)$') { $x = '/' + $Matches[1].ToLower() + $Matches[2] }
+    $x -replace '([$"`\\])', '\$1'
+}
+
+function Invoke-StatusLineSetup {
+    # Wire statusline-tap.cjs into the user's statusLine (or remove it again).
+    # The tap is a pure pipe stage - stdin reaches the original command
+    # byte-identical - so wrapping is safe for ANY existing command:
+    #   "<node>" "<tap>" | ( <original command> )
+    # With no statusLine configured at all, the tap runs --solo and renders a
+    # minimal usage line itself. Original settings are backed up AND kept in a
+    # sidecar so 'off' restores them exactly.
+    $onOff = $Arg
+    if ($onOff -notin @('on', 'off')) { Write-Host 'usage: preheat statusline on | off'; return }
+    $tap = Join-Path $Root 'statusline-tap.cjs'
+    $sidecar = Join-Path $Root 'statusline-original.json'
+    $claudeDir = Join-Path $env:USERPROFILE '.claude'
+    $candFiles = @((Join-Path $claudeDir 'settings.local.json'), (Join-Path $claudeDir 'settings.json'))
+    $readCmd = {
+        param($path)
+        if (-not (Test-Path $path)) { return $null }
+        try {
+            $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.PSObject.Properties['statusLine'] -and $j.statusLine -and $j.statusLine.PSObject.Properties['command']) {
+                return [string]$j.statusLine.command
+            }
+        } catch { }
+        $null
+    }
+    # the tap may live in EITHER settings file (whichever had the statusLine
+    # when it was installed) - both on and off must look at both, or an off
+    # after the other file gained a statusLine becomes a silent no-op while
+    # the wrapped file stays wired (found by review 2026-08-15)
+    $tapFile = $null
+    foreach ($cand in $candFiles) {
+        $c = & $readCmd $cand
+        if ($c -and ($c -like '*statusline-tap.cjs*')) { $tapFile = $cand; break }
+    }
+
+    if ($onOff -eq 'off') {
+        $sFile = $null
+        if (Test-Path $sidecar) {
+            # the sidecar remembers exactly which file was wrapped - trust it
+            # as long as that file still carries the tap
+            try {
+                $sc = Get-Content $sidecar -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($sc.PSObject.Properties['file'] -and $sc.file) {
+                    $c = & $readCmd ([string]$sc.file)
+                    if ($c -and ($c -like '*statusline-tap.cjs*')) { $sFile = [string]$sc.file }
+                }
+            } catch { }
+        }
+        if (-not $sFile) { $sFile = $tapFile }
+        if (-not $sFile) { Write-Host 'statusline tap is not installed - nothing to do'; return }
+        $json = $null
+        try { $json = Get-Content $sFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
+            Write-Host ('cannot parse {0} - fix it first, nothing was changed' -f $sFile); return
+        }
+        $oldCmd = [string]$json.statusLine.command
+        $restore = $null
+        if (Test-Path $sidecar) {
+            try { $restore = Get-Content $sidecar -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+        }
+        if (Test-Path $sFile) { Copy-Item $sFile ($sFile + '.bak-' + (Get-Date).ToString('yyyyMMdd-HHmmss')) -Force }
+        if ($restore -and $restore.PSObject.Properties['command'] -and $restore.command) {
+            $json.statusLine.command = [string]$restore.command
+        } elseif ($oldCmd -match '^"[^"]+" "[^"]*statusline-tap\.cjs" \| \( (.*) \)$') {
+            $json.statusLine.command = $Matches[1]   # sidecar lost: unwrap
+        } else {
+            $json.PSObject.Properties.Remove('statusLine')   # tap was solo: statusLine did not exist before
+        }
+        ConvertTo-Json -InputObject $json -Depth 20 | Set-Content -Path $sFile -Encoding UTF8
+        Remove-Item $sidecar -ErrorAction SilentlyContinue
+        Write-Host ('statusline tap removed from {0} (backup written)' -f $sFile)
+        return
+    }
+
+    # --- on ---
+    if ($tapFile) { Write-Host ('statusline tap is already installed (in {0})' -f $tapFile); return }
+    # target: whichever file currently carries a statusLine, local preferred;
+    # neither -> settings.local.json gets a solo tap
+    $sFile = $null
+    foreach ($cand in $candFiles) {
+        if (& $readCmd $cand) { $sFile = $cand; break }
+    }
+    if (-not $sFile) { $sFile = $candFiles[0] }
+    $json = $null
+    if (Test-Path $sFile) {
+        try { $json = Get-Content $sFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
+            Write-Host ('cannot parse {0} - fix it first, nothing was changed' -f $sFile); return
+        }
+    }
+    if (-not $json) { $json = [pscustomobject]@{} }
+    $oldCmd = & $readCmd $sFile
+    # reuse the node the user's own command already points at (the statusline
+    # environment may not have node on PATH); fall back to PATH lookup
+    $node = 'node'
+    if ($oldCmd -and ($oldCmd -match '"([^"]*node(\.exe)?)"')) { $node = $Matches[1] }
+    elseif (Get-Command node -ErrorAction SilentlyContinue) { $node = ConvertTo-BashPath (Get-Command node).Source }
+    $tapBash = ConvertTo-BashPath $tap
+    if ($oldCmd) {
+        $newCmd = ('"{0}" "{1}" | ( {2} )' -f $node, $tapBash, $oldCmd)
+    } else {
+        $newCmd = ('"{0}" "{1}" --solo' -f $node, $tapBash)
+    }
+    if (Test-Path $sFile) {
+        $probe = Get-Content $sFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        if ($probe) { Copy-Item $sFile ($sFile + '.bak-' + (Get-Date).ToString('yyyyMMdd-HHmmss')) -Force }
+    }
+    @{ file = $sFile; command = $oldCmd } | ConvertTo-Json | Set-Content -Path $sidecar -Encoding UTF8
+    if ($json.PSObject.Properties['statusLine'] -and $json.statusLine) {
+        $json.statusLine | Add-Member -NotePropertyName command -NotePropertyValue $newCmd -Force
+        if (-not ($json.statusLine.PSObject.Properties['type'])) {
+            $json.statusLine | Add-Member -NotePropertyName type -NotePropertyValue 'command' -Force
+        }
+    } else {
+        $json | Add-Member -NotePropertyName statusLine -NotePropertyValue ([pscustomobject]@{ type = 'command'; command = $newCmd }) -Force
+    }
+    ConvertTo-Json -InputObject $json -Depth 20 | Set-Content -Path $sFile -Encoding UTF8
+    Write-Host ('statusline tap installed in {0} (backup + sidecar written)' -f $sFile)
+    Write-Host 'takes effect on the next statusline render; rate limits land in state-ratelimits.json'
+    Write-Host 'undo anytime: preheat statusline off'
+}
+
 switch -Regex ($Command) {
     '^apply$'  { Invoke-Apply; break }
     '^fire$'   { Invoke-Fire; break }
     '^status$' { if ($Json) { Invoke-StatusJson } else { Invoke-Status }; break }
     '^learn$'  { Invoke-Learn; break }
     '^off$'    { Invoke-Off; break }
+    '^statusline$' { Invoke-StatusLineSetup; break }
     '^at$'     {
         if (-not $Arg) { throw 'usage: preheat at HH:mm' }
         Invoke-Once (Get-NextOccurrence $Arg) ('at ' + $Arg)
@@ -622,6 +758,6 @@ switch -Regex ($Command) {
         break
     }
     default {
-        Write-Host 'usage: preheat apply | status [-Json] | learn [auto] | at HH:mm | reset HH:mm | +Nh | +Nm | fire | off'
+        Write-Host 'usage: preheat apply | status [-Json] | learn [auto] | at HH:mm | reset HH:mm | +Nh | +Nm | fire | statusline on|off | off'
     }
 }

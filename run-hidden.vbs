@@ -1,6 +1,6 @@
-' claude-limit-relay: run the given command with NO console window.
-' A Task Scheduler console action flashes a cmd window on every tick (the
-' relay probe fires every 10 minutes - observed live as periodic popups).
+' claude-preheat: run the given command with NO console window.
+' A Task Scheduler console action flashes a cmd window on every tick (every
+' scheduled preheat fire would pop one - observed live as periodic popups).
 ' This wscript shim stays in the interactive session, so BurntToast
 ' notifications still display - unlike an S4U principal, which would also
 ' hide the window but silences toasts.

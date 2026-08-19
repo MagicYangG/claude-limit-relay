@@ -1,17 +1,19 @@
 # runtime state (personal / generated, do not ship)
 preheat-log.jsonl
-relay-log.jsonl
-relay-*.log
-relay-raw-*.json
 panel-log*
 state.json
 state-ratelimits.json
 statusline-original.json
-armed/
-done/
 firepit/
 *.tmp
 *.bak*
+
+# legacy v0.2 relay runtime files (upgraders still have them on disk)
+relay-log.jsonl
+relay-*.log
+relay-raw-*.json
+armed/
+done/
 
 # personal schedule (copy schedule.example.json instead)
 schedule.json

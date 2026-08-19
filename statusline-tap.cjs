@@ -5,13 +5,13 @@
 // front of any existing statusline command without changing what it renders.
 // Side effect: the payload's rate_limits block (the only documented
 // machine-readable source of the 5h/weekly usage windows) is cached next to
-// this file as state-ratelimits.json, where relay.ps1 reads it to time its
-// probes precisely instead of polling blind.
+// this file as state-ratelimits.json, where the panel reads it to render
+// the live quota strip without polling the CLI.
 //
 // --solo: no downstream statusline - render a minimal usage line instead of
 // echoing the payload (for users who had no statusLine configured at all).
 //
-// Install / remove:  relay statusline on | off
+// Install / remove:  preheat statusline on | off
 'use strict';
 const fs = require('fs');
 const path = require('path');

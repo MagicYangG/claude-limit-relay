@@ -1,17 +1,14 @@
-# claude-limit-relay
+# claude-preheat
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-本工具针对使用 Claude Code CLI 的 Claude 订阅用户，做两件事：
-
-- **额度窗口预热** —— 用 Windows 任务计划程序在你规定的时间提前预热窗口（5 小时窗口由额度空窗期的第一条消息锚定），让你在真正开工时，可以享受横跨两个 5 小时窗口的用量
-- **跨额度任务接续** —— 任务将要撞限/已经撞限 5 小时窗口额度时，在控制台排定的任务会自动站岗，在额度恢复后自动续跑，等忙完回来，一键接回接续窗口，省时省力
+本工具针对在 Windows 上使用 Claude Code CLI 的 Claude 订阅用户，只做一件事：5 小时额度窗口由额度空窗期的第一条消息锚定——定时发出一条极小的 ping，把窗口锚在你规定的时刻，让你真正开工时窗口已经在走，工作可以横跨两个窗口，而不是干到一半被掐断。
 
 ## 可视化控制面板
 
 本机地址：`localhost:7878`（中/英双语，页头一键切换）
 
-三个核心模块：额度窗口预热 / 跨额度任务排布 / 跨额度任务窗口接续
+模块：实时额度条（5 小时 + 周限，含精确重置时刻——跑一次 `preheat statusline on` 即可喂入）/ 每周重置时刻编辑器（写入 `schedule.json` 并直接生效）/ 一次性预热 / 近 7 天窗口利用率小结（底层即 `preheat learn`）
 
 ![控制台](docs/panel.zh-CN.png)
 
@@ -22,7 +19,7 @@
 **推荐安装方式：把下面这段直接粘给 Claude Code（或其它 AI 编程工具），让它替你装好：**
 
 ```text
-克隆 https://github.com/MagicYangG/claude-limit-relay 并完成安装：
+克隆 https://github.com/MagicYangG/claude-preheat 并完成安装：
 1. git clone 后，在仓库目录里运行 install.ps1
 2. 问我每周希望窗口重置的时刻，写进 schedule.json
    （reset 填目标重置时刻，预热时刻自动 = reset 减 5 小时）
@@ -37,58 +34,39 @@
 
 ## 注意事项
 
-1. **需要安装 Claude Code CLI**：预热和接力都需要通过 Claude Code CLI 执行
-2. **续跑窗口**：续跑是在同一目录、同一会话，原模型，原 effort，但不同的终端窗口进行的，接管注意关闭原会话窗口，防止两个窗口同时竞态写入。续跑用 `--dangerously-skip-permissions`（否则无人在场无法批准工具调用），安全含义见 [SECURITY.md](SECURITY.md)。
-3. **模型专属周限降档**：Claude 订阅存在专属模型限额，在排定任务时，可以选择撞到模型周限时换 opus 跑完或停下等待
+1. **需要安装 Claude Code CLI**：预热就是通过 CLI 发出的一条极小 headless 提示词
+2. **ping 到已激活的窗口无副作用**：只花一条微不足道的消息，其余什么都不动
+3. **睡眠中唤醒**：定时任务要把电脑从睡眠中叫醒，须在当前电源计划里启用唤醒定时器——关着时 `preheat status` 会给出警告
+
+## 接续（relay）去哪了？
+
+v0.2.0 曾内置跨额度自动续跑（"relay"），在额度恢复后复活被撞限杀死的会话。Claude Code v2.1.234 加入了原生撞限自动续跑——默认开启，可在 `/config` 的 "Continue automatically at usage limit" 处关闭——它在进程内处理"人守在键盘前"的场景，自带精确重置时刻，比任何外部看守都做得好。v0.3.0 选择退役 relay，不与平台竞争；最后一个含 relay 的版本保留在 [v0.2.0](https://github.com/MagicYangG/claude-preheat/releases/tag/v0.2.0) 标签。原生功能不做的事——在你坐下之前把窗口提前启动——正是 preheat 做的事。
 
 ## 命令参考
 
 推荐使用可视化控制面板。若要使用终端命令操作，可参照下文。
 
-### 预热（preheat）
-
 ```powershell
-preheat apply         # 按 schedule.json 注册每周预热任务（改表后重跑即生效）
-preheat status        # 本机活动 + 排定任务 + 最近记录
-preheat reset 20:00   # 一次性：让窗口在 20:00 重置（自动 15:00 预热）
-preheat at 15:00      # 一次性：15:00 预热
-preheat +2h           # 一次性：2 小时后预热
-preheat learn         # 按最近 30 天作息给出排期建议 + 窗口利用率报告（learn auto 一键写入并生效）
-preheat off           # 移除全部预热任务
+preheat apply           # 按 schedule.json 注册每周预热任务（改表后重跑即生效）
+preheat status          # 本机活动 + 排定任务 + 最近记录
+preheat reset 20:00     # 一次性：让窗口在 20:00 重置（自动 15:00 预热）
+preheat at 15:00        # 一次性：15:00 预热
+preheat +2h             # 一次性：2 小时后预热
+preheat learn           # 按最近 30 天作息给出排期建议 + 窗口利用率报告（learn auto 一键写入并生效）
+preheat statusline on   # 透传接入 statusline，让精确重置时刻喂入面板额度条（纯透传；off 还原）
+preheat off             # 移除全部预热任务
+claude-panel            # 打开本地可视化控制面板
 ```
 
 `schedule.json` 里 `reset` 填**目标重置时刻**，预热时刻自动 = reset − 5h；`proxy` 留空表示不经代理。
 
-### 接续（relay）
-
-**接续命令**：走之前 `relay arm -Watch`，回来 `relay takeover`。
-
-relay 是纯 PowerShell，不依赖任何 Claude 进程。接续执行的是 `claude --resume <原会话> -p "<续跑提示词>"` —— 挂载原对话完整历史，喂进一条真实提示词，来提示模型要做什么。
-
-| 场景 | 命令 |
-|---|---|
-| 已经撞限，人在电脑前 | `relay arm`（人工确认候选会话；`-Yes` 跳过） |
-| 预期会撞限但还没撞 | `relay arm -Watch`（站岗：全程零探测，靠转录判断死活） |
-| 回来接管现场 | `relay takeover`（进能命中会话桶的目录 + 挂载原会话 + 拉起交互 CLI，沿用免批准模式；注意需要关闭原窗口，防止两个窗口同时写入） |
+## 卸载
 
 ```powershell
-relay arm -Prompt "先把测试跑完再收尾"       # 自定义续跑提示词
-relay status                              # 队列状态 / 探测任务 / 最近记录
-relay legs a3f8 5                         # 不取消排布，直接把接力上限改成 5
-relay disarm                              # 取消排布（会击杀在途续跑进程）
-relay doctor                              # 体检：CLI / 计划任务 / 唤醒标志 / 面板，逐项检查前置条件
-relay test                                # 沙箱彩排全链路（mock claude，零额度，约 1 分钟）
-relay statusline on                       # 透传接入 statusline，拿到精确重置时刻（off 还原）
+preheat off             # 移除全部预热任务
+preheat statusline off  # 还原原始 statusline（若开启过透传）
 ```
 
-任务能横跨几个窗口：自己干的第 1 个 + 默认 3 个 = 最多 4 个窗口（约 20 小时），`-MaxLegs N` 可调（排上之后用 `relay legs` 或面板下拉框随时改），但要注意周限。
-
-### 卸载
-
-```powershell
-preheat off      # 移除全部预热任务
-relay disarm     # 取消全部排定任务
-```
-
-然后删除 `$PROFILE` 里 `# >>> claude-limit-relay functions >>>` 到
-`# <<< claude-limit-relay functions <<<` 之间几行，再删除本仓库目录。
+然后删除 PowerShell 配置文件（`$PROFILE.CurrentUserAllHosts`）里 `# >>> claude-preheat functions >>>` 到
+`# <<< claude-preheat functions <<<` 之间几行（旧版安装的标记可能是
+`claude-limit-relay`），再删除本仓库目录。
