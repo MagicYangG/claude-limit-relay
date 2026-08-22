@@ -2,13 +2,16 @@
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-本工具针对在 Windows 上使用 Claude Code CLI 的 Claude 订阅用户，只做一件事：5 小时额度窗口由额度空窗期的第一条消息锚定——定时发出一条极小的 ping，把窗口锚在你规定的时刻，让你真正开工时窗口已经在走，工作可以横跨两个窗口，而不是干到一半被掐断。
+针对在 Windows 上使用 Claude Code CLI 的 Claude 订阅用户，本工具提供可视化的窗口额度定时预热：5 小时额度窗口由额度空窗期的第一条消息锚定，定时发出一条极小的 ping 就能把窗口抢先锚在你规定的时刻，让你真正开展工作时可以横跨两个 5 小时额度窗口。具体包含：
+
+1. 以周为维度，窗口额度定时预热
+2. 一次性窗口额度定时预热
 
 ## 可视化控制面板
 
 本机地址：`localhost:7878`（中/英双语，页头一键切换）
 
-模块：实时额度条（5 小时 + 周限，含精确重置时刻——跑一次 `preheat statusline on` 即可喂入）/ 每周重置时刻编辑器（写入 `schedule.json` 并直接生效）/ 一次性预热 / 近 7 天窗口利用率小结（底层即 `preheat learn`）
+模块：实时额度条（5 小时 + 周限，含精确重置时刻——跑一次 `preheat statusline on` 即可喂入）/ 每周重置时刻编辑器（写入 `schedule.json` 并直接生效）/ 一次性预热 / 近 7 天窗口利用率小结
 
 ![控制台](docs/panel.zh-CN.png)
 
@@ -40,7 +43,7 @@
 
 ## 接续（relay）去哪了？
 
-v0.2.0 曾内置跨额度自动续跑（"relay"），在额度恢复后复活被撞限杀死的会话。Claude Code v2.1.234 加入了原生撞限自动续跑——默认开启，可在 `/config` 的 "Continue automatically at usage limit" 处关闭——它在进程内处理"人守在键盘前"的场景，自带精确重置时刻，比任何外部看守都做得好。v0.3.0 选择退役 relay，不与平台竞争；最后一个含 relay 的版本保留在 [v0.2.0](https://github.com/MagicYangG/claude-preheat/releases/tag/v0.2.0) 标签。原生功能不做的事——在你坐下之前把窗口提前启动——正是 preheat 做的事。
+v0.2.0 曾内置跨额度自动续跑（relay）。Claude Code v2.1.234 起 CLI 原生支持撞限自动续跑（默认开启，见 `/config` 的 "Continue automatically at usage limit"），relay 遂于 v0.3.0 退役；最后一个含 relay 的版本保留在 [v0.2.0](https://github.com/MagicYangG/claude-preheat/releases/tag/v0.2.0) 标签。原生功能不做的事——在你坐下之前把窗口提前启动——正是 preheat 做的事。
 
 ## 命令参考
 

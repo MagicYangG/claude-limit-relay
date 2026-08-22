@@ -2,7 +2,10 @@
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-For Claude subscribers who work in the Claude Code CLI on Windows. One job: the 5-hour usage window is anchored by the first message sent while no window is active — a scheduled tiny ping anchors it at the time you choose, so your real session starts with a window already ticking and your work spans two windows instead of being cut mid-flow.
+For Claude subscribers who work in the Claude Code CLI on Windows. The 5-hour usage window is anchored by the first message sent while no window is active — a scheduled tiny ping anchors it at the time you choose, so your real session spans two 5-hour windows instead of being cut mid-flow. Two flavors:
+
+1. Weekly recurring preheats
+2. One-shot preheats
 
 ## Web panel
 
@@ -40,7 +43,7 @@ When it's done, open `http://localhost:7878` in your browser and drive everythin
 
 ## Where did the relay go?
 
-v0.2.0 shipped a cross-window auto-resume ("relay") that revived limit-killed sessions when the quota returned. Claude Code v2.1.234 added native auto-continue — on by default, toggle in `/config` under "Continue automatically at usage limit" — which handles the stay-at-the-keyboard case in-process, with exact reset times, and better than an external watcher ever could. v0.3.0 retired relay rather than compete with the platform; the last relay release is preserved at tag [v0.2.0](https://github.com/MagicYangG/claude-preheat/releases/tag/v0.2.0). What the native feature does not do — start your window before you sit down — is exactly what preheat does.
+v0.2.0 shipped a cross-window auto-resume ("relay"). Claude Code v2.1.234 now auto-continues at a limit reset natively (on by default — `/config` → "Continue automatically at usage limit"), so v0.3.0 retired relay; the last relay release is preserved at tag [v0.2.0](https://github.com/MagicYangG/claude-preheat/releases/tag/v0.2.0). What the native feature does not do — start your window before you sit down — is exactly what preheat does.
 
 ## Command reference
 
